@@ -49,6 +49,26 @@ export function energyFromFeatures(features: EnergyFeatures): number {
   return clamp(Math.round(1 + score * 9), 1, 10)
 }
 
+export type TrackShape = "L" | "B" | "D"
+
+/** High-frequency share mapped onto 0–1 for electronic music. */
+export function brightnessFromRatio(hfRatio: number): number {
+  return Math.round(scale(hfRatio, HF_LOW, HF_HIGH) * 100) / 100
+}
+
+/**
+ * How much the drive changes across the track.
+ * L stays level, B builds, D jumps. The thresholds match a 0–1 section score.
+ */
+export function shapeFromOnsetRates(rates: number[]): TrackShape {
+  const levels = rates.filter((rate) => Number.isFinite(rate)).map((rate) => scale(rate, ONSET_LOW, ONSET_HIGH))
+  if (levels.length < 2) return "L"
+  const span = Math.max(...levels) - Math.min(...levels)
+  if (span < 0.15) return "L"
+  if (span < 0.35) return "B"
+  return "D"
+}
+
 const hann = new Float32Array(FRAME)
 for (let i = 0; i < FRAME; i++) {
   hann[i] = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (FRAME - 1)))

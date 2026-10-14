@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type DragEvent } from "react"
 import { analyzeFile } from "./analysis/client.ts"
 import type { Analysis } from "./analysis/types.ts"
 import { acquireLibrary, canWrite, forgetLibrary, loadLibrary, saveLibrary, writableFile } from "./files/library.ts"
-import { writeTags } from "./id3/writeEnergy.ts"
+import { formatMixedInKeyComment, writeTags } from "./id3/writeEnergy.ts"
 import "./App.css"
 
 type TrackStatus = "queued" | "analyzing" | "ready" | "writing" | "written" | "error"
@@ -32,6 +32,7 @@ export default function App() {
   const [saveKey, setSaveKey] = useState(false)
   const [saveOpenKey, setSaveOpenKey] = useState(false)
   const [saveBpm, setSaveBpm] = useState(false)
+  const [saveComment, setSaveComment] = useState(true)
   const [filter, setFilter] = useState<StatusFilter>("all")
   const tracksRef = useRef<Track[]>([])
   const queueRef = useRef<string[]>([])
@@ -151,6 +152,7 @@ export default function App() {
       key: saveKey,
       openKey: saveOpenKey,
       bpm: saveBpm,
+      comment: saveEnergy && saveComment,
     }
     const ready = tracksRef.current.filter(
       (track) => (track.status === "ready" || track.status === "written") && track.analysis,
@@ -244,7 +246,7 @@ export default function App() {
   }
 
   const analyzing = tracks.some((track) => track.status === "queued" || track.status === "analyzing")
-  const selection = { energy: saveEnergy, key: saveKey, openKey: saveOpenKey, bpm: saveBpm }
+  const selection = { energy: saveEnergy, key: saveKey, openKey: saveOpenKey, bpm: saveBpm, comment: saveEnergy && saveComment }
   const savableCount = tracks.filter(
     (track) => (track.status === "ready" || track.status === "written") && track.analysis,
   ).length
@@ -266,22 +268,46 @@ export default function App() {
 
       <fieldset className="writes">
         <legend>Save into the MP3</legend>
-        <label>
-          <input type="checkbox" checked={saveEnergy} onChange={(event) => setSaveEnergy(event.target.checked)} />
-          Energy
-        </label>
-        <label>
-          <input type="checkbox" checked={saveKey} onChange={(event) => setSaveKey(event.target.checked)} />
-          Key
-        </label>
-        <label>
-          <input type="checkbox" checked={saveOpenKey} onChange={(event) => setSaveOpenKey(event.target.checked)} />
-          Open Key
-        </label>
-        <label>
-          <input type="checkbox" checked={saveBpm} onChange={(event) => setSaveBpm(event.target.checked)} />
-          BPM
-        </label>
+        <div className="write-options">
+          <label>
+            <input type="checkbox" checked={saveEnergy} onChange={(event) => setSaveEnergy(event.target.checked)} />
+            Energy
+          </label>
+          <label>
+            <input type="checkbox" checked={saveKey} onChange={(event) => setSaveKey(event.target.checked)} />
+            Key
+          </label>
+          <label>
+            <input type="checkbox" checked={saveOpenKey} onChange={(event) => setSaveOpenKey(event.target.checked)} />
+            Open Key
+          </label>
+          <label>
+            <input type="checkbox" checked={saveBpm} onChange={(event) => setSaveBpm(event.target.checked)} />
+            BPM
+          </label>
+        </div>
+        <div className={saveEnergy ? "energy-detail" : "energy-detail off"}>
+          <p className="write-hint">In the energy tag</p>
+          <div className="comment-line">
+            <label>
+              <input
+                type="checkbox"
+                checked={saveEnergy && saveComment}
+                disabled={!saveEnergy}
+                onChange={(event) => setSaveComment(event.target.checked)}
+              />
+              Comment
+            </label>
+            <div className={saveEnergy && !saveComment ? "comment-formula off" : "comment-formula"}>
+              <span className="comment-value key">8A</span>
+              <span className="comment-caption key">Open Key</span>
+              <span className="comment-dash" aria-hidden="true">-</span>
+              <span className="comment-value energy">Energy 7</span>
+              <span className="comment-caption energy">Energy</span>
+              <span className="comment-note">in front of the existing comment</span>
+            </div>
+          </div>
+        </div>
       </fieldset>
 
       <div
@@ -352,6 +378,8 @@ export default function App() {
                   <th>Open Key</th>
                   <th>BPM</th>
                   <th>Energy</th>
+                  <th>Brightness</th>
+                  <th>Shape</th>
                   <th>Mixes with</th>
                   <th className="status">Status</th>
                 </tr>
@@ -359,7 +387,7 @@ export default function App() {
               <tbody>
                 {visible.length === 0 ? (
                   <tr>
-                    <td className="empty" colSpan={7}>
+                    <td className="empty" colSpan={9}>
                       Nothing in this view.
                     </td>
                   </tr>
@@ -405,6 +433,10 @@ function TrackRow({ track, onRemove }: { track: Track; onRemove: (id: string) =>
         ) : (
           "—"
         )}
+      </td>
+      <td className="code">{analysis ? analysis.brightness.toFixed(2) : "—"}</td>
+      <td className="code" title={analysis ? shapeTitle(analysis.shape) : undefined}>
+        {analysis?.shape ?? "—"}
       </td>
       <td className="code">{analysis ? analysis.mixesWith.join("  ") : "—"}</td>
       <td className={statusClass(track)}>
@@ -487,10 +519,11 @@ type SaveSelection = {
   key: boolean
   openKey: boolean
   bpm: boolean
+  comment: boolean
 }
 
 function hasSelection(selection: SaveSelection): boolean {
-  return selection.energy || selection.key || selection.openKey || selection.bpm
+  return selection.energy || selection.key || selection.openKey || selection.bpm || selection.comment
 }
 
 function fieldNames(selection: SaveSelection): string[] {
@@ -499,17 +532,19 @@ function fieldNames(selection: SaveSelection): string[] {
     selection.key ? "key" : "",
     selection.openKey ? "Open Key" : "",
     selection.bpm ? "BPM" : "",
+    selection.comment ? "comment" : "",
   ].filter((name) => name !== "")
 }
 
 function fieldsFor(analysis: Analysis, selection: SaveSelection) {
-  const onlyBpm = selection.bpm && !selection.energy && !selection.key && !selection.openKey
+  const onlyBpm = selection.bpm && !selection.energy && !selection.key && !selection.openKey && !selection.comment
   if (onlyBpm && analysis.bpm == null) throw new Error("No BPM detected for this track")
   return {
     energy: selection.energy ? analysis.energy : undefined,
     keyLabel: selection.key ? analysis.keyLabel : undefined,
     openKey: selection.openKey ? analysis.openKey : undefined,
     bpm: selection.bpm && analysis.bpm != null ? analysis.bpm : undefined,
+    comment: selection.comment ? formatMixedInKeyComment(analysis.openKey, analysis.energy) : undefined,
   }
 }
 
@@ -532,6 +567,12 @@ async function pickMp3s(): Promise<FileSystemFileHandle[]> {
     if (error instanceof TypeError) return picker(pickerOptions)
     throw error
   }
+}
+
+function shapeTitle(shape: "L" | "B" | "D"): string {
+  if (shape === "L") return "Linear. The drive stays level."
+  if (shape === "B") return "Building. The drive rises through the track."
+  return "Dramatic. Quiet sections and peaks sit far apart."
 }
 
 function statusLabel(status: TrackStatus): string {

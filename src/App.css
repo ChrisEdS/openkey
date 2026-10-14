@@ -60,17 +60,38 @@ h1 {
   padding: 0;
   border: 0;
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px 18px;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
 }
 
 .writes legend {
-  margin-right: 8px;
+  margin: 0;
+  padding: 0;
   color: var(--muted);
   font-size: 13px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.write-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  align-items: center;
+}
+
+.energy-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-left: 7px;
+  padding-left: 16px;
+  border-left: 1px solid var(--line);
+}
+
+.energy-detail.off {
+  opacity: 0.45;
 }
 
 .writes label {
@@ -80,10 +101,96 @@ h1 {
   cursor: pointer;
 }
 
+.writes label:has(input:disabled) {
+  cursor: not-allowed;
+}
+
 .writes input {
   accent-color: var(--amber);
   width: 16px;
   height: 16px;
+}
+
+.write-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.comment-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.comment-formula {
+  display: grid;
+  grid-template-columns: auto auto auto auto;
+  grid-template-rows: auto auto;
+  column-gap: 8px;
+  row-gap: 1px;
+  align-items: center;
+  padding: 5px 12px 5px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+}
+
+.comment-formula.off {
+  opacity: 0.4;
+}
+
+.comment-value,
+.comment-caption {
+  justify-self: center;
+}
+
+.comment-value.key,
+.comment-caption.key {
+  grid-column: 1;
+}
+
+.comment-value.energy,
+.comment-caption.energy {
+  grid-column: 3;
+}
+
+.comment-value {
+  grid-row: 1;
+  font-family: var(--mono);
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.comment-value.energy {
+  color: var(--amber);
+}
+
+.comment-caption {
+  grid-row: 2;
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.comment-dash {
+  grid-column: 2;
+  grid-row: 1;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.comment-note {
+  grid-column: 4;
+  grid-row: 1 / span 2;
+  padding-left: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.2;
 }
 
 button {
@@ -173,7 +280,7 @@ table {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
-  min-width: 860px;
+  min-width: 1040px;
 }
 
 th, td {
