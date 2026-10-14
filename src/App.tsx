@@ -1,7 +1,8 @@
-import { useRef, useState, type DragEvent } from "react"
+import { useEffect, useRef, useState, type DragEvent } from "react"
 import { analyzeFile } from "./analysis/client.ts"
 import type { Analysis } from "./analysis/types.ts"
-import { writeEnergy } from "./id3/writeEnergy.ts"
+import { acquireLibrary, canWrite, forgetLibrary, loadLibrary, saveLibrary, writableFile } from "./files/library.ts"
+import { writeTags } from "./id3/writeEnergy.ts"
 import "./App.css"
 
 type TrackStatus = "queued" | "analyzing" | "ready" | "writing" | "written" | "error"
@@ -26,10 +27,27 @@ export default function App() {
   const [dragging, setDragging] = useState(false)
   const [notice, setNotice] = useState("")
   const [writing, setWriting] = useState(false)
+  const [saveEnergy, setSaveEnergy] = useState(true)
+  const [saveKey, setSaveKey] = useState(false)
+  const [saveOpenKey, setSaveOpenKey] = useState(false)
+  const [saveBpm, setSaveBpm] = useState(false)
   const tracksRef = useRef<Track[]>([])
   const queueRef = useRef<string[]>([])
   const runningRef = useRef(false)
+  const libraryRef = useRef<FileSystemDirectoryHandle | null>(null)
   const canPick = typeof window.showOpenFilePicker === "function"
+
+  useEffect(() => {
+    let active = true
+    void loadLibrary()
+      .then((handle) => {
+        if (active && handle && !libraryRef.current) libraryRef.current = handle
+      })
+      .catch(() => undefined)
+    return () => {
+      active = false
+    }
+  }, [])
 
   function commit(next: Track[]) {
     tracksRef.current = next
@@ -126,20 +144,61 @@ export default function App() {
   }
 
   async function writeAll() {
-    const ready = tracksRef.current.filter((track) => track.status === "ready" && track.analysis)
-    if (ready.length === 0 || writing) return
+    const selection = {
+      energy: saveEnergy,
+      key: saveKey,
+      openKey: saveOpenKey,
+      bpm: saveBpm,
+    }
+    const ready = tracksRef.current.filter(
+      (track) => (track.status === "ready" || track.status === "written") && track.analysis,
+    )
+    if (ready.length === 0 || writing || !hasSelection(selection)) return
     setWriting(true)
     setNotice("")
     try {
+      let needsFolder = false
+      for (const track of ready) {
+        if (!(await canWrite(track.handle))) {
+          needsFolder = true
+          break
+        }
+      }
+      let directory: FileSystemDirectoryHandle | null = null
+      if (needsFolder) {
+        const access = await acquireLibrary(libraryRef.current)
+        if (!access.ok) {
+          setNotice(
+            access.reason === "cancelled"
+              ? "Save was cancelled"
+              : "Allow the music folder once. Chrome can then save every MP3 in it.",
+          )
+          return
+        }
+        directory = access.directory
+        libraryRef.current = directory
+        await saveLibrary(directory).catch(() => undefined)
+      }
+
+      let missing = 0
       for (const track of ready) {
         patch(track.id, { status: "writing", error: undefined })
         try {
-          const permission = await track.handle.requestPermission?.({ mode: "readwrite" })
-          if (permission && permission !== "granted") throw new Error("Write permission was denied")
-          const file = await track.handle.getFile()
+          let handle = track.handle
+          if (!(await canWrite(handle))) {
+            if (!directory) throw new Error("Allow the music folder once. Chrome can then save every MP3 in it.")
+            const writable = await writableFile(directory, handle)
+            if (!writable) {
+              missing += 1
+              throw new Error("Not in the chosen folder")
+            }
+            handle = writable
+            patch(track.id, { handle })
+          }
+          const file = await handle.getFile()
           const bytes = new Uint8Array(await file.arrayBuffer())
-          const tagged = writeEnergy(bytes, track.analysis!.energy)
-          const writable = await track.handle.createWritable()
+          const tagged = writeTags(bytes, fieldsFor(track.analysis!, selection))
+          const writable = await handle.createWritable()
           await writable.write(new Blob([bytesOf(tagged)]))
           await writable.close()
           patch(track.id, { status: "written" })
@@ -147,13 +206,22 @@ export default function App() {
           patch(track.id, { status: "ready", error: messageOf(error) })
         }
       }
+      if (directory && missing === ready.length) {
+        libraryRef.current = null
+        await forgetLibrary().catch(() => undefined)
+        setNotice("None of these files are in that folder. Choose the folder that contains them, then save again.")
+      }
     } finally {
       setWriting(false)
     }
   }
 
   const analyzing = tracks.some((track) => track.status === "queued" || track.status === "analyzing")
-  const readyCount = tracks.filter((track) => track.status === "ready" && track.analysis).length
+  const selection = { energy: saveEnergy, key: saveKey, openKey: saveOpenKey, bpm: saveBpm }
+  const savableCount = tracks.filter(
+    (track) => (track.status === "ready" || track.status === "written") && track.analysis,
+  ).length
+  const selectedNames = fieldNames(selection)
 
   return (
     <main>
@@ -162,9 +230,29 @@ export default function App() {
         <h1>Key and energy for your MP3s</h1>
         <p className="lede">
           Drop a track to read its musical key, Open Key code, tempo, and a 1–10 energy score.
-          Saving writes that score into the file&apos;s tags. The audio bytes stay as they are.
+          Choose which of those to save into the file. The audio bytes stay as they are.
         </p>
       </header>
+
+      <fieldset className="writes">
+        <legend>Save into the MP3</legend>
+        <label>
+          <input type="checkbox" checked={saveEnergy} onChange={(event) => setSaveEnergy(event.target.checked)} />
+          Energy
+        </label>
+        <label>
+          <input type="checkbox" checked={saveKey} onChange={(event) => setSaveKey(event.target.checked)} />
+          Key
+        </label>
+        <label>
+          <input type="checkbox" checked={saveOpenKey} onChange={(event) => setSaveOpenKey(event.target.checked)} />
+          Open Key
+        </label>
+        <label>
+          <input type="checkbox" checked={saveBpm} onChange={(event) => setSaveBpm(event.target.checked)} />
+          BPM
+        </label>
+      </fieldset>
 
       <div
         className={dragging ? "drop dragging" : "drop"}
@@ -194,10 +282,20 @@ export default function App() {
       {tracks.length > 0 ? (
         <>
           <div className="toolbar">
-            <button type="button" onClick={() => void writeAll()} disabled={readyCount === 0 || analyzing || writing}>
-              {writing ? "Saving…" : `Write energy to ${readyCount} ${readyCount === 1 ? "file" : "files"}`}
+            <button
+              type="button"
+              onClick={() => void writeAll()}
+              disabled={savableCount === 0 || analyzing || writing || selectedNames.length === 0}
+            >
+              {writing ? "Saving…" : saveButtonLabel(selectedNames, savableCount)}
             </button>
-            <p>{analyzing ? "Reading tracks one at a time." : "Key and tempo stay on this page."}</p>
+            <p>
+              {analyzing
+                ? "Reading tracks one at a time."
+                : selectedNames.length === 0
+                  ? "Select at least one field."
+                  : `Writes ${selectedNames.join(", ")}. Other tags stay as they are. The music folder is approved once for every file.`}
+            </p>
           </div>
           <div className="table-wrap">
             <table>
@@ -261,6 +359,43 @@ function TrackRow({ track }: { track: Track }) {
       <td className={track.error ? "status bad" : "status"}>{track.error ?? statusLabel(track.status)}</td>
     </tr>
   )
+}
+
+function saveButtonLabel(names: string[], count: number): string {
+  if (names.length === 0) return "Choose what to save"
+  const fileWord = count === 1 ? "file" : "files"
+  return `Write ${names.join(", ")} to ${count} ${fileWord}`
+}
+
+type SaveSelection = {
+  energy: boolean
+  key: boolean
+  openKey: boolean
+  bpm: boolean
+}
+
+function hasSelection(selection: SaveSelection): boolean {
+  return selection.energy || selection.key || selection.openKey || selection.bpm
+}
+
+function fieldNames(selection: SaveSelection): string[] {
+  return [
+    selection.energy ? "energy" : "",
+    selection.key ? "key" : "",
+    selection.openKey ? "Open Key" : "",
+    selection.bpm ? "BPM" : "",
+  ].filter((name) => name !== "")
+}
+
+function fieldsFor(analysis: Analysis, selection: SaveSelection) {
+  const onlyBpm = selection.bpm && !selection.energy && !selection.key && !selection.openKey
+  if (onlyBpm && analysis.bpm == null) throw new Error("No BPM detected for this track")
+  return {
+    energy: selection.energy ? analysis.energy : undefined,
+    keyLabel: selection.key ? analysis.keyLabel : undefined,
+    openKey: selection.openKey ? analysis.openKey : undefined,
+    bpm: selection.bpm && analysis.bpm != null ? analysis.bpm : undefined,
+  }
 }
 
 function isMp3File(handle: FileSystemHandle): handle is FileSystemFileHandle {

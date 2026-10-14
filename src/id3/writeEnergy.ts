@@ -53,51 +53,140 @@ export function readEnergyFields(data: Uint8Array): { energyLevel: string | null
   return { energyLevel, comment }
 }
 
+export type TagSelection = {
+  energy?: number
+  openKey?: string
+  keyLabel?: string
+  bpm?: number
+}
+
 export function writeEnergy(data: Uint8Array, energy: number): Uint8Array {
-  if (!Number.isInteger(energy) || energy < 1 || energy > 10) {
+  return writeTags(data, { energy })
+}
+
+export function writeTags(data: Uint8Array, fields: TagSelection): Uint8Array {
+  const writesEnergy = fields.energy != null
+  const writesOpenKey = Boolean(fields.openKey)
+  const writesMusical = Boolean(fields.keyLabel)
+  const writesBpm = fields.bpm != null
+  if (!writesEnergy && !writesOpenKey && !writesMusical && !writesBpm) {
+    throw new Error("Choose at least one tag to write")
+  }
+  if (writesEnergy && (!Number.isInteger(fields.energy) || fields.energy! < 1 || fields.energy! > 10)) {
     throw new Error("Energy must be an integer from 1 to 10")
   }
+  if (writesBpm && (!Number.isFinite(fields.bpm) || fields.bpm! <= 0)) {
+    throw new Error("BPM must be a positive number")
+  }
   const parsed = readTag(data)
-  const frames = updateFrames(parsed.version, parsed.frames, energy)
+  const frames = updateFrames(parsed.version, parsed.frames, fields)
   return assemble(parsed, frames)
 }
 
-function updateFrames(version: 3 | 4, frames: StoredFrame[], energy: number): StoredFrame[] {
-  const token = `Energy ${energy}`
+function updateFrames(version: 3 | 4, frames: StoredFrame[], fields: TagSelection): StoredFrame[] {
+  const writesEnergy = fields.energy != null
+  const writesOpenKey = Boolean(fields.openKey)
+  const writesMusical = Boolean(fields.keyLabel)
+  const writesKey = writesOpenKey || writesMusical
+  const writesBpm = fields.bpm != null
+  const storeMusicalSeparately = writesOpenKey && writesMusical
+  const tkeyValue = writesOpenKey ? fields.openKey! : musicalKeyCode(fields.keyLabel!)
   let wroteEnergy = false
   let wroteComment = false
+  let wroteTkey = false
+  let wroteMusical = false
+  let wroteBpm = false
   const next: StoredFrame[] = []
 
   for (const frame of frames) {
-    if ((frame.id === "TXXX" || frame.id === "COMM") && isProtected(version, frame.flags)) {
+    const protectedFrame = isProtected(version, frame.flags)
+    if (protectedFrame && writesEnergy && (frame.id === "TXXX" || frame.id === "COMM")) {
       throw new Error("This MP3 has a compressed or encrypted text frame, so it was left unchanged")
     }
+    if (protectedFrame && storeMusicalSeparately && frame.id === "TXXX") {
+      throw new Error("This MP3 has a compressed or encrypted text frame, so it was left unchanged")
+    }
+    if (protectedFrame && writesKey && frame.id === "TKEY") {
+      throw new Error("This MP3 has a compressed or encrypted key frame, so it was left unchanged")
+    }
+    if (protectedFrame && writesBpm && frame.id === "TBPM") {
+      throw new Error("This MP3 has a compressed or encrypted tempo frame, so it was left unchanged")
+    }
+
     const body = logicalBody(version, frame)
     if (frame.id === "TXXX") {
       const field = readTxxx(body)
-      if (field?.description === ENERGY_DESCRIPTION) {
+      if (writesEnergy && field?.description === ENERGY_DESCRIPTION) {
         if (!wroteEnergy) {
-          next.push(makeFrame(version, "TXXX", buildTxxx(ENERGY_DESCRIPTION, String(energy))))
+          next.push(makeFrame(version, "TXXX", buildTxxx(ENERGY_DESCRIPTION, String(fields.energy))))
           wroteEnergy = true
         }
         continue
       }
+      if (storeMusicalSeparately && field?.description === "MusicalKey") {
+        if (!wroteMusical) {
+          next.push(makeFrame(version, "TXXX", buildTxxx("MusicalKey", fields.keyLabel!)))
+          wroteMusical = true
+        }
+        continue
+      }
     }
-    if (frame.id === "COMM") {
+    if (writesEnergy && frame.id === "COMM") {
       const field = readComm(body)
       if (field?.description === "") {
-        const text = applyEnergyToken(field.text, energy)
+        const text = applyEnergyToken(field.text, fields.energy!)
         next.push(makeFrame(version, "COMM", buildComm(field.language, "", text)))
         wroteComment = true
         continue
       }
     }
+    if (writesKey && frame.id === "TKEY") {
+      if (!wroteTkey) {
+        next.push(makeFrame(version, "TKEY", buildText(tkeyValue)))
+        wroteTkey = true
+      }
+      continue
+    }
+    if (writesBpm && frame.id === "TBPM") {
+      if (!wroteBpm) {
+        next.push(makeFrame(version, "TBPM", buildText(formatTempo(fields.bpm!))))
+        wroteBpm = true
+      }
+      continue
+    }
     next.push(frame)
   }
 
-  if (!wroteEnergy) next.push(makeFrame(version, "TXXX", buildTxxx(ENERGY_DESCRIPTION, String(energy))))
-  if (!wroteComment) next.push(makeFrame(version, "COMM", buildComm("eng", "", token)))
+  if (writesEnergy && !wroteEnergy) {
+    next.push(makeFrame(version, "TXXX", buildTxxx(ENERGY_DESCRIPTION, String(fields.energy))))
+  }
+  if (writesEnergy && !wroteComment) {
+    next.push(makeFrame(version, "COMM", buildComm("eng", "", `Energy ${fields.energy}`)))
+  }
+  if (writesKey && !wroteTkey) next.push(makeFrame(version, "TKEY", buildText(tkeyValue)))
+  if (storeMusicalSeparately && !wroteMusical) {
+    next.push(makeFrame(version, "TXXX", buildTxxx("MusicalKey", fields.keyLabel!)))
+  }
+  if (writesBpm && !wroteBpm) next.push(makeFrame(version, "TBPM", buildText(formatTempo(fields.bpm!))))
   return next
+}
+
+function musicalKeyCode(label: string): string {
+  const match = /^(.*) (major|minor)$/.exec(label)
+  if (!match) return label
+  return match[2] === "minor" ? `${match[1]}m` : match[1]
+}
+
+function formatTempo(bpm: number): string {
+  const rounded = Math.round(bpm * 10) / 10
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)
+}
+
+function buildText(value: string): Uint8Array {
+  const text = latin1Bytes(value)
+  const body = new Uint8Array(1 + text.length + 1)
+  body.set(text, 1)
+  return body
 }
 
 export function applyEnergyToken(text: string, energy: number): string {

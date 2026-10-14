@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { applyEnergyToken, readEnergyFields, readId3, writeEnergy } from "./writeEnergy.ts"
+import { applyEnergyToken, readEnergyFields, readId3, writeEnergy, writeTags } from "./writeEnergy.ts"
 
 const audio = [0xff, 0xfb, 0x90, 0x64, 0x49, 0x44, 0x33, 0x11, 0x22]
 
@@ -214,5 +214,67 @@ describe("writeEnergy", () => {
     comm[9] = 0x80
     const input = buildTag({ padding: 64, frames: [comm] })
     expect(() => writeEnergy(input, 5)).toThrow(/unchanged/)
+  })
+})
+
+function latinText(body: Uint8Array): string {
+  const end = body.indexOf(0, 1)
+  return String.fromCharCode(...body.subarray(1, end === -1 ? body.length : end))
+}
+
+describe("writeTags", () => {
+  const geob = [0, 255, 0, 255, 224, 9, 8, 7]
+
+  function taggedLibrary(): Uint8Array {
+    return buildTag({
+      padding: 256,
+      frames: [
+        textFrame(3, "TIT2", "Song"),
+        textFrame(3, "TKEY", "11B"),
+        textFrame(3, "TBPM", "100"),
+        energyFrame(3, "4"),
+        commentFrame(3, "Intro | Energy 4"),
+        frame(3, "GEOB", geob),
+      ],
+    })
+  }
+
+  it("writes the musical key into TKEY and leaves energy alone", () => {
+    const output = writeTags(taggedLibrary(), { keyLabel: "A minor" })
+    expect(latinText(frameBody(output, "TKEY"))).toBe("Am")
+    expect(readEnergyFields(output)).toEqual({ energyLevel: "4", comment: "Intro | Energy 4" })
+    expect(latinText(frameBody(output, "TBPM"))).toBe("100")
+    expect([...frameBody(output, "GEOB")]).toEqual(geob)
+    expect([...readId3(output).audio]).toEqual(audio)
+  })
+
+  it("writes the Open Key code into TKEY", () => {
+    const output = writeTags(taggedLibrary(), { openKey: "8A" })
+    expect(latinText(frameBody(output, "TKEY"))).toBe("8A")
+    expect(readEnergyFields(output).energyLevel).toBe("4")
+  })
+
+  it("keeps both key names when Open Key and the musical key are selected", () => {
+    const output = writeTags(taggedLibrary(), { openKey: "8A", keyLabel: "A minor" })
+    expect(latinText(frameBody(output, "TKEY"))).toBe("8A")
+    const musical = readId3(output).frames.find((item) => item.id === "TXXX" && latinText(item.body) === "MusicalKey")
+    expect(musical).toBeTruthy()
+    expect(String.fromCharCode(...musical!.body.subarray(1))).toBe("MusicalKey\0A minor\0")
+  })
+
+  it("writes BPM and leaves the key tag alone", () => {
+    const output = writeTags(taggedLibrary(), { bpm: 128 })
+    expect(latinText(frameBody(output, "TBPM"))).toBe("128")
+    expect(latinText(frameBody(output, "TKEY"))).toBe("11B")
+    expect(readEnergyFields(output).comment).toBe("Intro | Energy 4")
+  })
+
+  it("writes a decimal BPM the same way it is shown", () => {
+    const output = writeTags(taggedLibrary(), { bpm: 89.14 })
+    expect(latinText(frameBody(output, "TBPM"))).toBe("89.1")
+  })
+
+  it("refuses an empty selection", () => {
+    expect(() => writeTags(taggedLibrary(), {})).toThrow(/at least one/)
   })
 })

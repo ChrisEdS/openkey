@@ -1,14 +1,20 @@
 /**
- * Fixed 1–10 intensity score.
- * Retune the ranges below after listening to real tracks.
- * Same features always produce the same integer.
+ * Fixed 1–10 intensity score for electronic music.
+ * A steady 126 BPM club track should land around 7.
+ * A sparser groove should land around 4.
+ * The same features always produce the same integer.
  */
-const HF_LOW = 0.04
-const HF_HIGH = 0.28
-const ONSET_LOW = 1
-const ONSET_HIGH = 7
-const CENTROID_LOW = 900
-const CENTROID_HIGH = 3200
+const ONSET_LOW = 0.8
+const ONSET_HIGH = 5.5
+const DANCE_LOW = 0.4
+const DANCE_HIGH = 2.2
+// Essentia danceability is 1 / mean DFA slope. Musical tracks sit around 0–3.
+// A flat tone makes the slope collapse toward 0 and the value explodes.
+const DANCE_LIMIT = 3.5
+const HF_LOW = 0.03
+const HF_HIGH = 0.18
+const DYNAMIC_LOW = 2
+const DYNAMIC_HIGH = 10
 
 const FRAME = 2048
 const HOP = 1024
@@ -17,7 +23,8 @@ const HF_HZ = 5000
 export type EnergyFeatures = {
   hfRatio: number
   onsetsPerSec: number
-  centroidHz: number
+  danceability: number
+  dynamicComplexity: number
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -28,11 +35,17 @@ function scale(value: number, low: number, high: number): number {
   return clamp((value - low) / (high - low), 0, 1)
 }
 
+function usableDanceability(value: number): number {
+  if (!Number.isFinite(value) || value < 0 || value > DANCE_LIMIT) return 0
+  return value
+}
+
 export function energyFromFeatures(features: EnergyFeatures): number {
-  const hf = scale(features.hfRatio, HF_LOW, HF_HIGH)
   const drive = scale(features.onsetsPerSec, ONSET_LOW, ONSET_HIGH)
-  const brightness = scale(features.centroidHz, CENTROID_LOW, CENTROID_HIGH)
-  const score = 0.4 * hf + 0.35 * drive + 0.25 * brightness
+  const dance = scale(usableDanceability(features.danceability), DANCE_LOW, DANCE_HIGH)
+  const hf = scale(features.hfRatio, HF_LOW, HF_HIGH)
+  const movement = scale(features.dynamicComplexity, DYNAMIC_LOW, DYNAMIC_HIGH)
+  const score = 0.4 * drive + 0.35 * dance + 0.15 * hf + 0.1 * movement
   return clamp(Math.round(1 + score * 9), 1, 10)
 }
 
@@ -82,46 +95,16 @@ function fft(re: Float32Array, im: Float32Array): void {
   }
 }
 
-function countOnsets(flux: number[], sampleRate: number): number {
-  if (flux.length === 0) return 0
-  let mean = 0
-  for (const value of flux) mean += value
-  mean /= flux.length
-  let variance = 0
-  for (const value of flux) {
-    const delta = value - mean
-    variance += delta * delta
-  }
-  const deviation = Math.sqrt(variance / flux.length)
-  const threshold = mean + 1.5 * deviation
-  const minGap = Math.max(1, Math.round((0.05 * sampleRate) / HOP))
-  let count = 0
-  let last = -minGap
-  for (let i = 1; i < flux.length - 1; i++) {
-    const value = flux[i]
-    if (value > threshold && value >= flux[i - 1] && value > flux[i + 1] && i - last >= minGap) {
-      count += 1
-      last = i
-    }
-  }
-  return count
-}
-
-export function computeEnergyFeatures(input: Float32Array, sampleRate: number): EnergyFeatures {
-  if (input.length === 0 || sampleRate <= 0) {
-    return { hfRatio: 0, onsetsPerSec: 0, centroidHz: 0 }
-  }
+export function highFrequencyRatio(input: Float32Array, sampleRate: number): number {
+  if (input.length === 0 || sampleRate <= 0) return 0
 
   const samples = input.length >= FRAME ? input : padded(input)
   const re = new Float32Array(FRAME)
   const im = new Float32Array(FRAME)
-  const previous = new Float32Array(FRAME / 2)
   const binHz = sampleRate / FRAME
   const hfBin = Math.min(FRAME / 2, Math.max(1, Math.ceil(HF_HZ / binHz)))
-  let centroidSum = 0
   let hfSum = 0
   let frames = 0
-  const flux: number[] = []
 
   for (let start = 0; start + FRAME <= samples.length; start += HOP) {
     for (let i = 0; i < FRAME; i++) {
@@ -130,37 +113,19 @@ export function computeEnergyFeatures(input: Float32Array, sampleRate: number): 
     }
     fft(re, im)
 
-    let magnitudeSum = 0
-    let weighted = 0
     let lowPower = 0
     let highPower = 0
-    let frameFlux = 0
     for (let bin = 1; bin < FRAME / 2; bin++) {
-      const magnitude = Math.hypot(re[bin], im[bin])
-      const power = magnitude * magnitude
-      magnitudeSum += magnitude
-      weighted += magnitude * bin * binHz
+      const power = re[bin] * re[bin] + im[bin] * im[bin]
       if (bin >= hfBin) highPower += power
       else lowPower += power
-      const rise = magnitude - previous[bin]
-      if (rise > 0) frameFlux += rise
-      previous[bin] = magnitude
     }
     const totalPower = lowPower + highPower
-    if (magnitudeSum > 1e-8) {
-      centroidSum += weighted / magnitudeSum
-      hfSum += totalPower > 0 ? highPower / totalPower : 0
-    }
-    flux.push(frameFlux)
+    if (totalPower > 1e-12) hfSum += highPower / totalPower
     frames += 1
   }
 
-  const duration = samples.length / sampleRate
-  return {
-    hfRatio: frames > 0 ? hfSum / frames : 0,
-    centroidHz: frames > 0 ? centroidSum / frames : 0,
-    onsetsPerSec: duration > 0 ? countOnsets(flux, sampleRate) / duration : 0,
-  }
+  return frames > 0 ? hfSum / frames : 0
 }
 
 function padded(input: Float32Array): Float32Array {

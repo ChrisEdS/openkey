@@ -1,7 +1,7 @@
 // essentia.js is AGPL-3.0. That license applies if this app is distributed.
 import Essentia from "essentia.js/dist/essentia.js-core.es.js"
 import { EssentiaWASM } from "essentia.js/dist/essentia-wasm.es.js"
-import { computeEnergyFeatures, energyFromFeatures } from "./energy.ts"
+import { energyFromFeatures, highFrequencyRatio } from "./energy.ts"
 import { isLowConfidence, keyLabel, mixesWith, openKeyCode } from "./openKey.ts"
 import type { Analysis } from "./types.ts"
 
@@ -35,6 +35,21 @@ type EssentiaModule = {
     minBPM: number,
     sampleRate: number,
   ): { bpm: number }
+  OnsetRate(signal: VectorFloat): { onsetRate: number; onsets?: VectorFloat }
+  Danceability(
+    signal: VectorFloat,
+    maxTau: number,
+    minTau: number,
+    sampleRate: number,
+    tauMultiplier: number,
+  ): { danceability: number; dfa?: VectorFloat }
+  DynamicComplexity(signal: VectorFloat, frameSize: number, sampleRate: number): { dynamicComplexity: number; loudness?: number }
+  Resample(
+    signal: VectorFloat,
+    inputSampleRate: number,
+    outputSampleRate: number,
+    quality: number,
+  ): { signal: VectorFloat }
 }
 
 const EssentiaCtor = Essentia as unknown as new (wasm: unknown) => EssentiaModule
@@ -88,13 +103,64 @@ function analyze(samples: Float32Array, sampleRate: number): Analysis {
       strength,
       uncertain: isLowConfidence(strength),
       bpm: Number.isFinite(bpm) && bpm > 0 ? Math.round(bpm * 10) / 10 : null,
-      energy: energyFromFeatures(computeEnergyFeatures(samples, sampleRate)),
+      energy: trackEnergy(engine, samples, sampleRate),
       mixesWith: mixesWith(code),
     }
   } finally {
     release(keySignal)
     release(bpmSignal)
   }
+}
+
+function trackEnergy(engine: EssentiaModule, samples: Float32Array, sampleRate: number): number {
+  const hfRatio = highFrequencyRatio(samples, sampleRate)
+  const rhythm = { onsetsPerSec: 0, danceability: 0, dynamicComplexity: 0 }
+  let prepared: PreparedSignal | null = null
+  try {
+    prepared = signalAt44100(engine, samples, sampleRate)
+    const onsets = engine.OnsetRate(prepared.signal)
+    rhythm.onsetsPerSec = finite(onsets.onsetRate)
+    release(onsets.onsets ?? null)
+    const dance = engine.Danceability(prepared.signal, 8800, 310, 44100, 1.1)
+    rhythm.danceability = finite(dance.danceability)
+    release(dance.dfa ?? null)
+    const dynamics = engine.DynamicComplexity(prepared.signal, 0.2, 44100)
+    rhythm.dynamicComplexity = finite(dynamics.dynamicComplexity)
+  } catch {
+    // A missing rhythm estimate still leaves the spectral ratio.
+  } finally {
+    prepared?.release()
+  }
+  return energyFromFeatures({ hfRatio, ...rhythm })
+}
+
+type PreparedSignal = {
+  signal: VectorFloat
+  release: () => void
+}
+
+function signalAt44100(engine: EssentiaModule, samples: Float32Array, sampleRate: number): PreparedSignal {
+  const original = engine.arrayToVector(samples)
+  if (Math.round(sampleRate) === 44100) {
+    return { signal: original, release: () => release(original) }
+  }
+  try {
+    const resampled = engine.Resample(original, sampleRate, 44100, 1).signal
+    return {
+      signal: resampled,
+      release: () => {
+        release(resampled)
+        release(original)
+      },
+    }
+  } catch (error) {
+    release(original)
+    throw error
+  }
+}
+
+function finite(value: number): number {
+  return Number.isFinite(value) ? value : 0
 }
 
 type WorkerScope = {

@@ -17,8 +17,15 @@ interface OpenFilePickerOptions {
   }>
 }
 
+interface DirectoryPickerOptions {
+  id?: string
+  mode?: "read" | "readwrite"
+  startIn?: FileSystemHandle | "desktop" | "documents" | "downloads" | "music" | "pictures" | "videos"
+}
+
 interface Window {
   showOpenFilePicker?: (options?: OpenFilePickerOptions) => Promise<FileSystemFileHandle[]>
+  showDirectoryPicker?: (options?: DirectoryPickerOptions) => Promise<FileSystemDirectoryHandle>
 }
 
 interface DataTransferItem {
@@ -26,6 +33,7 @@ interface DataTransferItem {
 }
 
 interface FileSystemHandle {
+  queryPermission?: (descriptor?: { mode?: "read" | "readwrite" }) => Promise<PermissionState>
   requestPermission?: (descriptor?: { mode?: "read" | "readwrite" }) => Promise<PermissionState>
 }
 
