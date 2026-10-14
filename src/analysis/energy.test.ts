@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { energyFromFeatures, highFrequencyRatio } from "./energy.ts"
+import { brightnessFromRatio, energyFromFeatures, highFrequencyRatio, shapeFromOnsetRates } from "./energy.ts"
 
 const quiet = { hfRatio: 0, onsetsPerSec: 0, danceability: 0, dynamicComplexity: 0 }
 
@@ -41,6 +41,22 @@ describe("energyFromFeatures", () => {
       danceability: 1.7,
       dynamicComplexity: 5,
     }))
+  })
+})
+
+describe("brightness and shape", () => {
+  it("maps the high-frequency range onto 0–1", () => {
+    expect(brightnessFromRatio(0.03)).toBe(0)
+    expect(brightnessFromRatio(0.105)).toBe(0.5)
+    expect(brightnessFromRatio(0.18)).toBe(1)
+    expect(brightnessFromRatio(1)).toBe(1)
+  })
+
+  it("labels a level track, a build, and a drop", () => {
+    expect(shapeFromOnsetRates([3, 3.2, 3.1, 3])).toBe("L")
+    expect(shapeFromOnsetRates([1.5, 2.2, 2.8, 2.4])).toBe("B")
+    expect(shapeFromOnsetRates([0.8, 1.2, 5.5, 2])).toBe("D")
+    expect(shapeFromOnsetRates([4])).toBe("L")
   })
 })
 

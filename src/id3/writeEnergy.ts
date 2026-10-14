@@ -58,10 +58,17 @@ export type TagSelection = {
   openKey?: string
   keyLabel?: string
   bpm?: number
+  /** Mixed In Key comment token, for example "8A - Energy 7". */
+  comment?: string
 }
 
 export function writeEnergy(data: Uint8Array, energy: number): Uint8Array {
-  return writeTags(data, { energy })
+  return writeTags(data, { energy, comment: `Energy ${energy}` })
+}
+
+/** Camelot key and energy, the comment Mixed In Key writes. */
+export function formatMixedInKeyComment(openKey: string, energy: number): string {
+  return `${openKey} - Energy ${energy}`
 }
 
 export function writeTags(data: Uint8Array, fields: TagSelection): Uint8Array {
@@ -69,7 +76,8 @@ export function writeTags(data: Uint8Array, fields: TagSelection): Uint8Array {
   const writesOpenKey = Boolean(fields.openKey)
   const writesMusical = Boolean(fields.keyLabel)
   const writesBpm = fields.bpm != null
-  if (!writesEnergy && !writesOpenKey && !writesMusical && !writesBpm) {
+  const writesComment = Boolean(fields.comment)
+  if (!writesEnergy && !writesOpenKey && !writesMusical && !writesBpm && !writesComment) {
     throw new Error("Choose at least one tag to write")
   }
   if (writesEnergy && (!Number.isInteger(fields.energy) || fields.energy! < 1 || fields.energy! > 10)) {
@@ -89,6 +97,7 @@ function updateFrames(version: 3 | 4, frames: StoredFrame[], fields: TagSelectio
   const writesMusical = Boolean(fields.keyLabel)
   const writesKey = writesOpenKey || writesMusical
   const writesBpm = fields.bpm != null
+  const writesComment = Boolean(fields.comment)
   const storeMusicalSeparately = writesOpenKey && writesMusical
   const tkeyValue = writesOpenKey ? fields.openKey! : musicalKeyCode(fields.keyLabel!)
   let wroteEnergy = false
@@ -100,7 +109,10 @@ function updateFrames(version: 3 | 4, frames: StoredFrame[], fields: TagSelectio
 
   for (const frame of frames) {
     const protectedFrame = isProtected(version, frame.flags)
-    if (protectedFrame && writesEnergy && (frame.id === "TXXX" || frame.id === "COMM")) {
+    if (protectedFrame && writesEnergy && frame.id === "TXXX") {
+      throw new Error("This MP3 has a compressed or encrypted text frame, so it was left unchanged")
+    }
+    if (protectedFrame && writesComment && frame.id === "COMM") {
       throw new Error("This MP3 has a compressed or encrypted text frame, so it was left unchanged")
     }
     if (protectedFrame && storeMusicalSeparately && frame.id === "TXXX") {
@@ -131,10 +143,10 @@ function updateFrames(version: 3 | 4, frames: StoredFrame[], fields: TagSelectio
         continue
       }
     }
-    if (writesEnergy && frame.id === "COMM") {
+    if (writesComment && frame.id === "COMM") {
       const field = readComm(body)
       if (field?.description === "") {
-        const text = applyEnergyToken(field.text, fields.energy!)
+        const text = applyMixedInKeyComment(field.text, fields.comment!)
         next.push(makeFrame(version, "COMM", buildComm(field.language, "", text)))
         wroteComment = true
         continue
@@ -160,8 +172,8 @@ function updateFrames(version: 3 | 4, frames: StoredFrame[], fields: TagSelectio
   if (writesEnergy && !wroteEnergy) {
     next.push(makeFrame(version, "TXXX", buildTxxx(ENERGY_DESCRIPTION, String(fields.energy))))
   }
-  if (writesEnergy && !wroteComment) {
-    next.push(makeFrame(version, "COMM", buildComm("eng", "", `Energy ${fields.energy}`)))
+  if (writesComment && !wroteComment) {
+    next.push(makeFrame(version, "COMM", buildComm("eng", "", fields.comment!)))
   }
   if (writesKey && !wroteTkey) next.push(makeFrame(version, "TKEY", buildText(tkeyValue)))
   if (storeMusicalSeparately && !wroteMusical) {
@@ -190,12 +202,20 @@ function buildText(value: string): Uint8Array {
 }
 
 export function applyEnergyToken(text: string, energy: number): string {
-  const token = `Energy ${energy}`
-  if (/\bEnergy\s+\d{1,2}\b/.test(text)) {
-    return text.replace(/\bEnergy\s+\d{1,2}\b/g, token)
-  }
-  if (text.trim() === "") return token
-  return `${text} | ${token}`
+  return applyMixedInKeyComment(text, `Energy ${energy}`)
+}
+
+/** Puts the Mixed In Key token in front of the comment and replaces an older one. */
+export function applyMixedInKeyComment(text: string, token: string): string {
+  const kept = text
+    .replace(/\b\d{1,2}[AB]\s*[-–—]\s*Energy\s+\d{1,2}\b/gi, " ")
+    .replace(/\bEnergy\s+\d{1,2}\b/g, " ")
+    .replace(/^\s*\d{1,2}[AB]\s*[-–—]\s*/i, "")
+    .replace(/[|]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+  if (kept === "" || kept === token) return token
+  return `${token} ${kept}`
 }
 
 function assemble(parsed: ParsedTag, frames: StoredFrame[]): Uint8Array {

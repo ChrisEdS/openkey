@@ -1,7 +1,7 @@
 // essentia.js is AGPL-3.0. That license applies if this app is distributed.
 import Essentia from "essentia.js/dist/essentia.js-core.es.js"
 import { EssentiaWASM } from "essentia.js/dist/essentia-wasm.es.js"
-import { energyFromFeatures, highFrequencyRatio } from "./energy.ts"
+import { brightnessFromRatio, energyFromFeatures, highFrequencyRatio, shapeFromOnsetRates } from "./energy.ts"
 import { isLowConfidence, keyLabel, mixesWith, openKeyCode } from "./openKey.ts"
 import type { Analysis } from "./types.ts"
 
@@ -97,13 +97,16 @@ function analyze(samples: Float32Array, sampleRate: number): Analysis {
     if (!code) throw new Error(`Unrecognized key ${key.key} ${key.scale}`)
     const strength = Number(key.strength)
     const bpm = Number(tempo.bpm)
+    const portrait = trackPortrait(engine, samples, sampleRate)
     return {
       keyLabel: keyLabel(key.key, key.scale),
       openKey: code,
       strength,
       uncertain: isLowConfidence(strength),
       bpm: Number.isFinite(bpm) && bpm > 0 ? Math.round(bpm * 10) / 10 : null,
-      energy: trackEnergy(engine, samples, sampleRate),
+      energy: portrait.energy,
+      brightness: portrait.brightness,
+      shape: portrait.shape,
       mixesWith: mixesWith(code),
     }
   } finally {
@@ -112,7 +115,14 @@ function analyze(samples: Float32Array, sampleRate: number): Analysis {
   }
 }
 
-function trackEnergy(engine: EssentiaModule, samples: Float32Array, sampleRate: number): number {
+const SECTION_MARKS = [0, 0.35, 0.5, 0.75]
+const SECTION_SECONDS = 15
+
+function trackPortrait(engine: EssentiaModule, samples: Float32Array, sampleRate: number): {
+  energy: number
+  brightness: number
+  shape: ReturnType<typeof shapeFromOnsetRates>
+} {
   const hfRatio = highFrequencyRatio(samples, sampleRate)
   const rhythm = { onsetsPerSec: 0, danceability: 0, dynamicComplexity: 0 }
   let prepared: PreparedSignal | null = null
@@ -131,7 +141,32 @@ function trackEnergy(engine: EssentiaModule, samples: Float32Array, sampleRate: 
   } finally {
     prepared?.release()
   }
-  return energyFromFeatures({ hfRatio, ...rhythm })
+  return {
+    energy: energyFromFeatures({ hfRatio, ...rhythm }),
+    brightness: brightnessFromRatio(hfRatio),
+    shape: shapeFromOnsetRates(sectionOnsetRates(engine, samples, sampleRate)),
+  }
+}
+
+function sectionOnsetRates(engine: EssentiaModule, samples: Float32Array, sampleRate: number): number[] {
+  const windowSamples = Math.floor(SECTION_SECONDS * sampleRate)
+  const rates: number[] = []
+  for (const mark of SECTION_MARKS) {
+    const start = Math.min(samples.length, Math.floor(mark * samples.length))
+    const end = Math.min(samples.length, start + windowSamples)
+    if (end - start < sampleRate) continue
+    const prepared = signalAt44100(engine, samples.slice(start, end), sampleRate)
+    try {
+      const onsets = engine.OnsetRate(prepared.signal)
+      rates.push(finite(onsets.onsetRate))
+      release(onsets.onsets ?? null)
+    } catch {
+      // One short section can fail without hiding the others.
+    } finally {
+      prepared.release()
+    }
+  }
+  return rates
 }
 
 type PreparedSignal = {

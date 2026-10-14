@@ -12,7 +12,11 @@
   --sans: "Avenir Next", "Segoe UI", sans-serif;
   --mono: "SF Mono", ui-monospace, "Cascadia Mono", monospace;
   font-family: var(--sans);
-  background: var(--bg);
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(980px 520px at -8% -12%, rgb(228 162 58 / 18%), transparent 58%),
+    radial-gradient(720px 460px at 108% 0%, rgb(183 211 154 / 8%), transparent 52%);
+  background-attachment: fixed;
   color: var(--ink);
   font-synthesis: none;
   text-rendering: optimizeLegibility;

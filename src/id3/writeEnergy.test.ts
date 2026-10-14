@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { applyEnergyToken, readEnergyFields, readId3, writeEnergy, writeTags } from "./writeEnergy.ts"
+import { applyEnergyToken, applyMixedInKeyComment, formatMixedInKeyComment, readEnergyFields, readId3, writeEnergy, writeTags } from "./writeEnergy.ts"
 
 const audio = [0xff, 0xfb, 0x90, 0x64, 0x49, 0x44, 0x33, 0x11, 0x22]
 
@@ -74,9 +74,9 @@ function frameBody(data: Uint8Array, id: string): Uint8Array {
 
 describe("applyEnergyToken", () => {
   it("replaces an existing token and appends when there is none", () => {
-    expect(applyEnergyToken("Intro | Energy 3", 7)).toBe("Intro | Energy 7")
+    expect(applyEnergyToken("Intro | Energy 3", 7)).toBe("Energy 7 Intro")
     expect(applyEnergyToken("Energy 3", 7)).toBe("Energy 7")
-    expect(applyEnergyToken("Live set", 7)).toBe("Live set | Energy 7")
+    expect(applyEnergyToken("Live set", 7)).toBe("Energy 7 Live set")
     expect(applyEnergyToken("   ", 4)).toBe("Energy 4")
   })
 })
@@ -109,7 +109,7 @@ describe("writeEnergy", () => {
     const output = writeEnergy(input, 7)
     const fields = readEnergyFields(output)
     expect(fields.energyLevel).toBe("7")
-    expect(fields.comment).toBe("Intro | Energy 7")
+    expect(fields.comment).toBe("Energy 7 Intro")
     expect([...frameBody(output, "GEOB")]).toEqual(geob)
     expect([...frameBody(output, "APIC")]).toEqual(apic)
     expect([...frameBody(output, "TKEY")]).toEqual([0, ...chars("8A"), 0])
@@ -123,7 +123,7 @@ describe("writeEnergy", () => {
   it("replaces the energy fields again without growing the file", () => {
     const once = writeEnergy(libraryTag(), 7)
     const twice = writeEnergy(once, 8)
-    expect(readEnergyFields(twice)).toEqual({ energyLevel: "8", comment: "Intro | Energy 8" })
+    expect(readEnergyFields(twice)).toEqual({ energyLevel: "8", comment: "Energy 8 Intro" })
     expect(twice.length).toBe(once.length)
     expect([...frameBody(twice, "GEOB")]).toEqual(geob)
     expect(readId3(twice).frames.filter((item) => item.id === "TXXX")).toHaveLength(2)
@@ -158,7 +158,7 @@ describe("writeEnergy", () => {
     const output = writeEnergy(input, 5)
     expect([...frameBody(output, "GEOB")]).toEqual(geob)
     expect([...frameBody(output, "TIT2")]).toEqual([0, ...chars("Song"), 0])
-    expect(readEnergyFields(output).comment).toBe("Live set | Energy 5")
+    expect(readEnergyFields(output).comment).toBe("Energy 5 Live set")
     expect([...readId3(output).audio]).toEqual(audio)
   })
 
@@ -198,7 +198,7 @@ describe("writeEnergy", () => {
       0xff, 0xfe, 0x71, 0x67, 0xac, 0x4e,
     ])
     const output = writeEnergy(buildTag({ padding: 256, frames: [unicode, frame(3, "GEOB", geob)] }), 7)
-    expect(readEnergyFields(output).comment).toBe("東京 | Energy 7")
+    expect(readEnergyFields(output).comment).toBe("Energy 7 東京")
     expect([...frameBody(output, "GEOB")]).toEqual(geob)
   })
 
@@ -272,6 +272,25 @@ describe("writeTags", () => {
   it("writes a decimal BPM the same way it is shown", () => {
     const output = writeTags(taggedLibrary(), { bpm: 89.14 })
     expect(latinText(frameBody(output, "TBPM"))).toBe("89.1")
+  })
+
+  it("writes the Mixed In Key comment in front of the existing note", () => {
+    const output = writeTags(taggedLibrary(), { comment: formatMixedInKeyComment("8A", 7) })
+    expect(readEnergyFields(output).comment).toBe("8A - Energy 7 Intro")
+    expect(readEnergyFields(output).energyLevel).toBe("4")
+    expect(latinText(frameBody(output, "TKEY"))).toBe("11B")
+  })
+
+  it("replaces an older Mixed In Key comment instead of stacking it", () => {
+    const first = writeTags(taggedLibrary(), { comment: "11A - Energy 4" })
+    const second = writeTags(first, { comment: formatMixedInKeyComment("8A", 7) })
+    expect(readEnergyFields(second).comment).toBe("8A - Energy 7 Intro")
+    expect(applyMixedInKeyComment("10A – www.Beatport.com", "8A - Energy 7")).toBe("8A - Energy 7 www.Beatport.com")
+  })
+
+  it("leaves the comment alone when only energy is selected", () => {
+    const output = writeTags(taggedLibrary(), { energy: 9 })
+    expect(readEnergyFields(output)).toEqual({ energyLevel: "9", comment: "Intro | Energy 4" })
   })
 
   it("refuses an empty selection", () => {
