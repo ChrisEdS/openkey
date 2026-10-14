@@ -258,13 +258,16 @@ export default function App() {
   return (
     <main>
       <header>
-        <p className="wordmark">
-          <svg className="mark" viewBox="0 0 32 32" aria-hidden="true">
-            <circle cx="16" cy="16" r="6" fill="none" stroke="currentColor" strokeWidth="2" />
-            <path d="M16 3v6M16 23v6M3 16h6M23 16h6" stroke="currentColor" strokeWidth="2" />
-          </svg>
-          openkey
-        </p>
+        <div className="topbar">
+          <p className="wordmark">
+            <svg className="mark" viewBox="0 0 32 32" aria-hidden="true">
+              <circle cx="16" cy="16" r="6" fill="none" stroke="currentColor" strokeWidth="2" />
+              <path d="M16 3v6M16 23v6M3 16h6M23 16h6" stroke="currentColor" strokeWidth="2" />
+            </svg>
+            openkey
+          </p>
+          <a className="donate" href="https://github.com/sponsors/ChrisEdS">Donate</a>
+        </div>
         <h1>Key and energy for your MP3s</h1>
         <p className="lede">
           Drop a track to read its musical key, Open Key code, tempo, and a 1–10 energy score.

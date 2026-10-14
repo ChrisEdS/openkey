@@ -2,6 +2,8 @@
 
 openkey reads an MP3 in the browser and tells you the musical key, the Open Key code, the tempo, and how the track feels. You choose which of those facts are written back into the original file. The audio is not re-encoded. Artwork, DJ markers, and every tag you leave unselected stay as they are.
 
+[Donate via GitHub Sponsors](https://github.com/sponsors/ChrisEdS)
+
 - 🎹 **Key** — musical key, for example `A minor`. A weak estimate is marked.
 - 🔄 **Open Key** — the Camelot code, plus the three codes it mixes with.
 - ⚡ **Energy** — 1–10 for electronic music. A steady club track lands around 7. Written to the energy tag.
@@ -98,6 +100,6 @@ npm run lint
 
 essentia.js is AGPL-3.0. That license applies if this app is distributed.
 
-## Sponsor
+## Donate
 
-If openkey is useful, you can support the work on [GitHub Sponsors](https://github.com/sponsors/ChrisEdS).
+If openkey is useful, you can support the work on [GitHub Sponsors](https://github.com/sponsors/ChrisEdS). The same link is in the app, next to the name.

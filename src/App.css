@@ -9,16 +9,38 @@ main {
   overflow: hidden;
 }
 
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 0 20px;
+}
+
 .wordmark {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 0 0 20px;
+  margin: 0;
   color: var(--amber);
   font-family: var(--mono);
   font-size: 13px;
   letter-spacing: 0.16em;
   text-transform: uppercase;
+}
+
+.donate {
+  color: var(--ink);
+  font-size: 14px;
+  text-decoration: none;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 12px;
+}
+
+.donate:hover {
+  border-color: var(--amber);
+  color: var(--amber);
 }
 
 .mark {
