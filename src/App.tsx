@@ -258,12 +258,35 @@ export default function App() {
   return (
     <main>
       <header>
-        <p className="wordmark">openkey</p>
+        <p className="wordmark">
+          <svg className="mark" viewBox="0 0 32 32" aria-hidden="true">
+            <circle cx="16" cy="16" r="6" fill="none" stroke="currentColor" strokeWidth="2" />
+            <path d="M16 3v6M16 23v6M3 16h6M23 16h6" stroke="currentColor" strokeWidth="2" />
+          </svg>
+          openkey
+        </p>
         <h1>Key and energy for your MP3s</h1>
         <p className="lede">
           Drop a track to read its musical key, Open Key code, tempo, and a 1–10 energy score.
           Choose which of those to save into the file. The audio bytes stay as they are.
         </p>
+        <ul className="highlights">
+          <li>
+            <span aria-hidden="true">🎹</span> Key
+          </li>
+          <li>
+            <span aria-hidden="true">🔄</span> Open Key
+          </li>
+          <li>
+            <span aria-hidden="true">⚡</span> Energy
+          </li>
+          <li>
+            <span aria-hidden="true">💬</span> Comment
+          </li>
+          <li>
+            <span aria-hidden="true">🌗</span> Shape
+          </li>
+        </ul>
       </header>
 
       <fieldset className="writes">
@@ -435,10 +458,20 @@ function TrackRow({ track, onRemove }: { track: Track; onRemove: (id: string) =>
         )}
       </td>
       <td className="code">{analysis ? analysis.brightness.toFixed(2) : "—"}</td>
-      <td className="code" title={analysis ? shapeTitle(analysis.shape) : undefined}>
-        {analysis?.shape ?? "—"}
+      <td title={analysis ? shapeTitle(analysis.shape) : undefined}>
+        {analysis ? <span className={`shape shape-${analysis.shape.toLowerCase()}`}>{analysis.shape}</span> : "—"}
       </td>
-      <td className="code">{analysis ? analysis.mixesWith.join("  ") : "—"}</td>
+      <td>
+        {analysis ? (
+          <span className="mixes">
+            {analysis.mixesWith.map((code) => (
+              <span className="mix" key={code}>{code}</span>
+            ))}
+          </span>
+        ) : (
+          "—"
+        )}
+      </td>
       <td className={statusClass(track)}>
         <div className="status-cell">
           <span>{track.error ?? statusLabel(track.status)}</span>
