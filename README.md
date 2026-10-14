@@ -2,6 +2,12 @@
 
 openkey reads an MP3 in the browser and tells you the musical key, the Open Key code, the tempo, and how the track feels. You choose which of those facts are written back into the original file. The audio is not re-encoded. Artwork, DJ markers, and every tag you leave unselected stay as they are.
 
+- 🎹 **Key** — musical key, for example `A minor`. A weak estimate is marked.
+- 🔄 **Open Key** — the Camelot code, plus the three codes it mixes with.
+- ⚡ **Energy** — 1–10 for electronic music. A steady club track lands around 7. Written to the energy tag.
+- 💬 **Comment** — Open Key and energy in the Mixed In Key form, `8A - Energy 7`, in front of the existing note.
+- 🌗 **Shape** — L stays level, B builds, D jumps. Shown in the table, not written to the file.
+
 ![openkey with key, energy, brightness, and shape for a few tracks](docs/screenshot.png)
 
 Chrome or Edge can overwrite the file in place. Safari can show a result, but it cannot write the original MP3.

@@ -43,32 +43,6 @@ h1 {
   line-height: 1.6;
 }
 
-.highlights {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin: 28px 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.highlights li {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 14px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: rgb(30 27 22 / 72%);
-  color: var(--ink);
-  font-size: 14px;
-}
-
-.highlights span {
-  font-size: 16px;
-  line-height: 1;
-}
-
 .drop {
   margin-top: 28px;
   padding: 32px;

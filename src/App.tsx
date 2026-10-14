@@ -270,23 +270,6 @@ export default function App() {
           Drop a track to read its musical key, Open Key code, tempo, and a 1–10 energy score.
           Choose which of those to save into the file. The audio bytes stay as they are.
         </p>
-        <ul className="highlights">
-          <li>
-            <span aria-hidden="true">🎹</span> Key
-          </li>
-          <li>
-            <span aria-hidden="true">🔄</span> Open Key
-          </li>
-          <li>
-            <span aria-hidden="true">⚡</span> Energy
-          </li>
-          <li>
-            <span aria-hidden="true">💬</span> Comment
-          </li>
-          <li>
-            <span aria-hidden="true">🌗</span> Shape
-          </li>
-        </ul>
       </header>
 
       <fieldset className="writes">
