@@ -408,6 +408,28 @@ export default function App() {
           </div>
         </div>
       ) : null}
+
+      <aside className="sponsor">
+        <h2>Sponsor this project</h2>
+        <div className="sponsor-row">
+          <a className="sponsor-person" href="https://github.com/ChrisEdS">
+            <img src="/chriseds.png" alt="" width="40" height="40" />
+            <span className="sponsor-login">ChrisEdS</span>
+            <span className="sponsor-name">Christian Scherm</span>
+          </a>
+          <a className="sponsor-heart" href="https://github.com/sponsors/ChrisEdS" aria-label="Sponsor ChrisEdS">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.7"
+                d="M12 19.4c-4.6-2.8-7.2-5.5-7.2-8.6A3.9 3.9 0 0 1 12 8.1a3.9 3.9 0 0 1 7.2 2.7c0 3.1-2.6 5.8-7.2 8.6Z"
+              />
+            </svg>
+          </a>
+        </div>
+        <a className="sponsor-more" href="https://github.com/sponsors">Learn more about GitHub Sponsors</a>
+      </aside>
     </main>
   )
 }

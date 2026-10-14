@@ -43,6 +43,90 @@ main {
   color: var(--amber);
 }
 
+.sponsor {
+  flex: none;
+  margin-top: auto;
+  padding: 22px 0 8px;
+  border-top: 1px solid var(--line);
+}
+
+.sponsor h2 {
+  margin: 0 0 16px;
+  font-size: 22px;
+  font-weight: 640;
+  letter-spacing: -0.03em;
+}
+
+.sponsor-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.sponsor-person {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.sponsor-person img {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.sponsor-login {
+  font-weight: 650;
+}
+
+.sponsor-name {
+  color: var(--muted);
+}
+
+.sponsor-heart {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  color: #f778ba;
+  text-decoration: none;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.sponsor-heart svg {
+  width: 20px;
+  height: 20px;
+}
+
+.sponsor-heart:hover {
+  color: #ff9ccc;
+  border-color: #f778ba;
+}
+
+.sponsor-more {
+  display: inline-block;
+  margin-top: 16px;
+  color: #79b8ff;
+  font-size: 15px;
+}
+
+.sponsor-more:hover {
+  color: #a8d0ff;
+}
+
+.sponsor a:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
 .mark {
   width: 18px;
   height: 18px;
