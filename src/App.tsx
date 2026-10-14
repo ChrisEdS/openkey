@@ -6,6 +6,7 @@ import { writeTags } from "./id3/writeEnergy.ts"
 import "./App.css"
 
 type TrackStatus = "queued" | "analyzing" | "ready" | "writing" | "written" | "error"
+type StatusFilter = "all" | "working" | "ready" | "saved" | "failed"
 
 type Track = {
   id: string
@@ -31,6 +32,7 @@ export default function App() {
   const [saveKey, setSaveKey] = useState(false)
   const [saveOpenKey, setSaveOpenKey] = useState(false)
   const [saveBpm, setSaveBpm] = useState(false)
+  const [filter, setFilter] = useState<StatusFilter>("all")
   const tracksRef = useRef<Track[]>([])
   const queueRef = useRef<string[]>([])
   const runningRef = useRef(false)
@@ -216,12 +218,40 @@ export default function App() {
     }
   }
 
+  function removeTrack(id: string) {
+    queueRef.current = queueRef.current.filter((item) => item !== id)
+    commit(tracksRef.current.filter((track) => track.id !== id))
+  }
+
+  function clearTracks() {
+    if (writing) return
+    queueRef.current = []
+    commit([])
+    setFilter("all")
+    setNotice("")
+  }
+
+  function retryFailed() {
+    const failed = tracksRef.current.filter((track) => track.status === "error")
+    if (failed.length === 0 || writing) return
+    commit(
+      tracksRef.current.map((track) =>
+        track.status === "error" ? { ...track, status: "queued", error: undefined } : track,
+      ),
+    )
+    queueRef.current.push(...failed.map((track) => track.id))
+    void pump()
+  }
+
   const analyzing = tracks.some((track) => track.status === "queued" || track.status === "analyzing")
   const selection = { energy: saveEnergy, key: saveKey, openKey: saveOpenKey, bpm: saveBpm }
   const savableCount = tracks.filter(
     (track) => (track.status === "ready" || track.status === "written") && track.analysis,
   ).length
   const selectedNames = fieldNames(selection)
+  const tally = tallyTracks(tracks)
+  const visible = tracks.filter((track) => matchesFilter(track, filter))
+  const failedCount = tracks.filter((track) => track.status === "error").length
 
   return (
     <main>
@@ -280,21 +310,36 @@ export default function App() {
       ) : null}
 
       {tracks.length > 0 ? (
-        <>
+        <div className="workspace">
           <div className="toolbar">
-            <button
-              type="button"
-              onClick={() => void writeAll()}
-              disabled={savableCount === 0 || analyzing || writing || selectedNames.length === 0}
-            >
-              {writing ? "Saving…" : saveButtonLabel(selectedNames, savableCount)}
-            </button>
+            <div className="stats" role="group" aria-label="Filter by status">
+              <FilterButton label="All" count={tally.total} pressed={filter === "all"} onClick={() => setFilter("all")} />
+              <FilterButton label="Working" count={tally.working} pressed={filter === "working"} onClick={() => setFilter("working")} />
+              <FilterButton label="Ready" count={tally.ready} pressed={filter === "ready"} onClick={() => setFilter("ready")} />
+              <FilterButton label="Saved" count={tally.saved} pressed={filter === "saved"} onClick={() => setFilter("saved")} />
+              <FilterButton label="Failed" count={tally.failed} pressed={filter === "failed"} onClick={() => setFilter("failed")} />
+            </div>
+            <div className="actions">
+              <button
+                type="button"
+                onClick={() => void writeAll()}
+                disabled={savableCount === 0 || analyzing || writing || selectedNames.length === 0}
+              >
+                {writing ? "Saving…" : saveButtonLabel(selectedNames, savableCount)}
+              </button>
+              <button type="button" className="quiet" onClick={retryFailed} disabled={failedCount === 0 || writing}>
+                Retry failed
+              </button>
+              <button type="button" className="quiet" onClick={clearTracks} disabled={writing}>
+                Clear list
+              </button>
+            </div>
             <p>
               {analyzing
-                ? "Reading tracks one at a time."
+                ? `${trackSummary(tally)} Reading tracks one at a time.`
                 : selectedNames.length === 0
-                  ? "Select at least one field."
-                  : `Writes ${selectedNames.join(", ")}. Other tags stay as they are. The music folder is approved once for every file.`}
+                  ? `${trackSummary(tally)} Select at least one field.`
+                  : `${trackSummary(tally)} Writes ${selectedNames.join(", ")}. Other tags stay as they are. The music folder is approved once for every file.`}
             </p>
           </div>
           <div className="table-wrap">
@@ -302,29 +347,35 @@ export default function App() {
               <caption className="sr-only">Analyzed MP3s</caption>
               <thead>
                 <tr>
-                  <th>File</th>
+                  <th className="file">File</th>
                   <th>Key</th>
                   <th>Open Key</th>
                   <th>BPM</th>
                   <th>Energy</th>
                   <th>Mixes with</th>
-                  <th>Status</th>
+                  <th className="status">Status</th>
                 </tr>
               </thead>
               <tbody>
-                {tracks.map((track) => (
-                  <TrackRow key={track.id} track={track} />
-                ))}
+                {visible.length === 0 ? (
+                  <tr>
+                    <td className="empty" colSpan={7}>
+                      Nothing in this view.
+                    </td>
+                  </tr>
+                ) : (
+                  visible.map((track) => <TrackRow key={track.id} track={track} onRemove={removeTrack} />)
+                )}
               </tbody>
             </table>
           </div>
-        </>
+        </div>
       ) : null}
     </main>
   )
 }
 
-function TrackRow({ track }: { track: Track }) {
+function TrackRow({ track, onRemove }: { track: Track; onRemove: (id: string) => void }) {
   const analysis = track.analysis
   return (
     <tr>
@@ -356,9 +407,73 @@ function TrackRow({ track }: { track: Track }) {
         )}
       </td>
       <td className="code">{analysis ? analysis.mixesWith.join("  ") : "—"}</td>
-      <td className={track.error ? "status bad" : "status"}>{track.error ?? statusLabel(track.status)}</td>
+      <td className={statusClass(track)}>
+        <div className="status-cell">
+          <span>{track.error ?? statusLabel(track.status)}</span>
+          <button
+            type="button"
+            className="quiet tiny"
+            onClick={() => onRemove(track.id)}
+            disabled={track.status === "writing" || track.status === "analyzing"}
+          >
+            Remove
+          </button>
+        </div>
+      </td>
     </tr>
   )
+}
+
+function FilterButton({
+  label,
+  count,
+  pressed,
+  onClick,
+}: {
+  label: string
+  count: number
+  pressed: boolean
+  onClick: () => void
+}) {
+  return (
+    <button type="button" className="quiet" aria-pressed={pressed} onClick={onClick}>
+      {label} {count}
+    </button>
+  )
+}
+
+function tallyTracks(tracks: Track[]) {
+  return {
+    total: tracks.length,
+    working: tracks.filter((track) => track.status === "queued" || track.status === "analyzing" || track.status === "writing").length,
+    ready: tracks.filter((track) => track.status === "ready" && !track.error).length,
+    saved: tracks.filter((track) => track.status === "written").length,
+    failed: tracks.filter((track) => track.status === "error" || Boolean(track.error)).length,
+  }
+}
+
+function trackSummary(tally: ReturnType<typeof tallyTracks>): string {
+  const parts = [`${tally.total} ${tally.total === 1 ? "track" : "tracks"}`]
+  if (tally.working > 0) parts.push(`${tally.working} working`)
+  if (tally.ready > 0) parts.push(`${tally.ready} ready`)
+  if (tally.saved > 0) parts.push(`${tally.saved} saved`)
+  if (tally.failed > 0) parts.push(`${tally.failed} failed`)
+  return `${parts.join(" · ")}.`
+}
+
+function matchesFilter(track: Track, filter: StatusFilter): boolean {
+  if (filter === "all") return true
+  if (filter === "working") return track.status === "queued" || track.status === "analyzing" || track.status === "writing"
+  if (filter === "ready") return track.status === "ready" && !track.error
+  if (filter === "saved") return track.status === "written"
+  return track.status === "error" || Boolean(track.error)
+}
+
+function statusClass(track: Track): string {
+  if (track.error || track.status === "error") return "status bad"
+  if (track.status === "written") return "status good"
+  if (track.status === "queued" || track.status === "analyzing" || track.status === "writing") return "status busy"
+  return "status"
 }
 
 function saveButtonLabel(names: string[], count: number): string {
