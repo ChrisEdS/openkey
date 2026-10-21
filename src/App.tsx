@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState, type DragEvent } from "react"
 import { analyzeFile } from "./analysis/client.ts"
 import type { Analysis } from "./analysis/types.ts"
+import { audioPickerTypes, isAudioFile, isMp3Name } from "./files/audio.ts"
+import { ALL_COLUMNS, trackListCsv, UNWRITTEN_COLUMNS, type TrackListRow } from "./files/trackList.ts"
 import { acquireLibrary, canWrite, forgetLibrary, loadLibrary, saveLibrary, writableFile } from "./files/library.ts"
 import { formatMixedInKeyComment, writeTags } from "./id3/writeEnergy.ts"
 import "./App.css"
 
 type TrackStatus = "queued" | "analyzing" | "ready" | "writing" | "written" | "error"
 type StatusFilter = "all" | "working" | "ready" | "saved" | "failed"
+type ListView = "unwritten" | "visible" | "all"
 
 type Track = {
   id: string
@@ -20,7 +23,7 @@ type Track = {
 const pickerOptions = {
   multiple: true,
   excludeAcceptAllOption: true,
-  types: [{ description: "MP3 audio", accept: { "audio/mpeg": [".mp3"] } }],
+  types: audioPickerTypes,
 }
 
 export default function App() {
@@ -34,6 +37,7 @@ export default function App() {
   const [saveBpm, setSaveBpm] = useState(false)
   const [saveComment, setSaveComment] = useState(true)
   const [filter, setFilter] = useState<StatusFilter>("all")
+  const [listView, setListView] = useState<ListView>("unwritten")
   const tracksRef = useRef<Track[]>([])
   const queueRef = useRef<string[]>([])
   const runningRef = useRef(false)
@@ -93,7 +97,7 @@ export default function App() {
 
   async function chooseFiles() {
     if (!window.showOpenFilePicker) {
-      setNotice("Open this page in Chrome or Edge to write energy back into the original MP3.")
+      setNotice("Open this page in Chrome or Edge to write tags back into the original MP3.")
       return
     }
     try {
@@ -111,7 +115,7 @@ export default function App() {
     const items = [...event.dataTransfer.items].filter((item) => item.kind === "file")
     if (items.length === 0) return
     if (items.some((item) => !item.getAsFileSystemHandle)) {
-      setNotice("This browser cannot save into dropped files. Choose MP3s in Chrome or Edge.")
+      setNotice("This browser cannot save into dropped files. Choose audio in Chrome or Edge.")
       return
     }
     const handles = items.map((item) => item.getAsFileSystemHandle!())
@@ -123,7 +127,7 @@ export default function App() {
     const accepted: Track[] = []
     for (const pending of pendingHandles) {
       const handle = await pending
-      if (!handle || !isMp3File(handle)) {
+      if (!handle || !isAudioFile(handle)) {
         if (handle) skipped.push(handle.name)
         continue
       }
@@ -137,8 +141,8 @@ export default function App() {
     if (skipped.length > 0) {
       setNotice(
         skipped.length === 1
-          ? `Skipped ${skipped[0]}. Only MP3 files can be tagged.`
-          : `Skipped ${skipped.length} items. Only MP3 files can be tagged.`,
+          ? `Skipped ${skipped[0]}. Only audio files can be read.`
+          : `Skipped ${skipped.length} items. Only audio files can be read.`,
       )
     } else {
       setNotice("")
@@ -155,7 +159,7 @@ export default function App() {
       comment: saveEnergy && saveComment,
     }
     const ready = tracksRef.current.filter(
-      (track) => (track.status === "ready" || track.status === "written") && track.analysis,
+      (track) => (track.status === "ready" || track.status === "written") && track.analysis && isMp3Name(track.name),
     )
     if (ready.length === 0 || writing || !hasSelection(selection)) return
     setWriting(true)
@@ -225,6 +229,21 @@ export default function App() {
     commit(tracksRef.current.filter((track) => track.id !== id))
   }
 
+  function saveTrackList() {
+    const source = listView === "visible" ? tracksRef.current.filter((track) => matchesFilter(track, filter)) : tracksRef.current
+    const columns = listView === "unwritten" ? UNWRITTEN_COLUMNS : ALL_COLUMNS
+    const csv = trackListCsv(source.map(listRow), columns)
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = listView === "unwritten" ? "openkey-not-written.csv" : "openkey-tracks.csv"
+    document.body.append(link)
+    link.click()
+    link.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 0)
+  }
+
   function clearTracks() {
     if (writing) return
     queueRef.current = []
@@ -247,16 +266,18 @@ export default function App() {
 
   const analyzing = tracks.some((track) => track.status === "queued" || track.status === "analyzing")
   const selection = { energy: saveEnergy, key: saveKey, openKey: saveOpenKey, bpm: saveBpm, comment: saveEnergy && saveComment }
-  const savableCount = tracks.filter(
+  const readyTracks = tracks.filter(
     (track) => (track.status === "ready" || track.status === "written") && track.analysis,
-  ).length
+  )
+  const savableCount = readyTracks.filter((track) => isMp3Name(track.name)).length
+  const readOnlyCount = readyTracks.length - savableCount
   const selectedNames = fieldNames(selection)
   const tally = tallyTracks(tracks)
   const visible = tracks.filter((track) => matchesFilter(track, filter))
   const failedCount = tracks.filter((track) => track.status === "error").length
 
   return (
-    <main>
+    <main className={tracks.length > 0 ? "has-tracks" : undefined}>
       <header>
         <div className="topbar">
           <p className="wordmark">
@@ -268,7 +289,7 @@ export default function App() {
           </p>
           <a className="donate" href="https://github.com/sponsors/ChrisEdS">Donate</a>
         </div>
-        <h1>Key and energy for your MP3s</h1>
+        <h1>Key and energy for your tracks</h1>
         <p className="lede">
           Drop a track to read its musical key, Open Key code, tempo, and a 1–10 energy score.
           Choose which of those to save into the file. The audio bytes stay as they are.
@@ -333,7 +354,7 @@ export default function App() {
         onDrop={onDrop}
       >
         <button type="button" onClick={() => void chooseFiles()} disabled={!canPick || writing}>
-          Choose MP3s
+          Choose audio
         </button>
         <p>{canPick ? "or drop them here" : "Open this page in Chrome or Edge to choose files"}</p>
       </div>
@@ -362,6 +383,17 @@ export default function App() {
               >
                 {writing ? "Saving…" : saveButtonLabel(selectedNames, savableCount)}
               </button>
+              <label className="list-view">
+                <span className="sr-only">List to save</span>
+                <select value={listView} onChange={(event) => setListView(event.target.value as ListView)}>
+                  <option value="unwritten">Not written</option>
+                  <option value="visible">This view</option>
+                  <option value="all">Whole table</option>
+                </select>
+              </label>
+              <button type="button" className="quiet" onClick={saveTrackList} title={listViewTitle(listView)}>
+                Save list
+              </button>
               <button type="button" className="quiet" onClick={retryFailed} disabled={failedCount === 0 || writing}>
                 Retry failed
               </button>
@@ -374,21 +406,24 @@ export default function App() {
                 ? `${trackSummary(tally)} Reading tracks one at a time.`
                 : selectedNames.length === 0
                   ? `${trackSummary(tally)} Select at least one field.`
-                  : `${trackSummary(tally)} Writes ${selectedNames.join(", ")}. Other tags stay as they are. The music folder is approved once for every file.`}
+                  : `${trackSummary(tally)} ${saveSummary(selectedNames, savableCount, readOnlyCount)}`}
+            </p>
+            <p className="legend">
+              Energy is 1–10 intensity. Brightness is the share above 5 kHz. Shape is L level, B builds, D jumps. Brightness and shape are not saved.
             </p>
           </div>
           <div className="table-wrap">
             <table>
-              <caption className="sr-only">Analyzed MP3s</caption>
+              <caption className="sr-only">Analyzed tracks</caption>
               <thead>
                 <tr>
                   <th className="file">File</th>
                   <th>Key</th>
                   <th>Open Key</th>
                   <th>BPM</th>
-                  <th>Energy</th>
-                  <th>Brightness</th>
-                  <th>Shape</th>
+                  <th title="1–10 intensity. A steady club track is about 7.">Energy</th>
+                  <th title="Share of the sound above 5 kHz. 0 is dark, 1 is bright.">Brightness</th>
+                  <th title="L stays level, B builds, D jumps.">Shape</th>
                   <th>Mixes with</th>
                   <th className="status">Status</th>
                 </tr>
@@ -410,13 +445,16 @@ export default function App() {
       ) : null}
 
       <aside className="sponsor">
-        <h2>Sponsor this project</h2>
         <div className="sponsor-row">
-          <a className="sponsor-person" href="https://github.com/ChrisEdS">
-            <img src="/chriseds.png" alt="" width="40" height="40" />
-            <span className="sponsor-login">ChrisEdS</span>
-            <span className="sponsor-name">Christian Scherm</span>
-          </a>
+          <div className="sponsor-main">
+            <h2>Sponsor this project</h2>
+            <a className="sponsor-person" href="https://github.com/ChrisEdS">
+              <img src="/chriseds.png" alt="" width="28" height="28" />
+              <span className="sponsor-login">ChrisEdS</span>
+              <span className="sponsor-name">Christian Scherm</span>
+            </a>
+            <a className="sponsor-more" href="https://github.com/sponsors">Learn more</a>
+          </div>
           <a className="sponsor-heart" href="https://github.com/sponsors/ChrisEdS" aria-label="Sponsor ChrisEdS">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path
@@ -428,7 +466,6 @@ export default function App() {
             </svg>
           </a>
         </div>
-        <a className="sponsor-more" href="https://github.com/sponsors">Learn more about GitHub Sponsors</a>
       </aside>
     </main>
   )
@@ -438,7 +475,7 @@ function TrackRow({ track, onRemove }: { track: Track; onRemove: (id: string) =>
   const analysis = track.analysis
   return (
     <tr>
-      <td className="file">{track.name}</td>
+      <td className="file" title={track.name}>{track.name}</td>
       <td>
         {analysis ? (
           <>
@@ -589,8 +626,10 @@ function fieldsFor(analysis: Analysis, selection: SaveSelection) {
   }
 }
 
-function isMp3File(handle: FileSystemHandle): handle is FileSystemFileHandle {
-  return handle.kind === "file" && handle.name.toLowerCase().endsWith(".mp3")
+function saveSummary(names: string[], mp3Count: number, readOnlyCount: number): string {
+  const readOnly = readOnlyCount > 0 ? " Other audio is analyzed only." : ""
+  if (mp3Count === 0) return `Tags are written into MP3s.${readOnly}`
+  return `Writes ${names.join(", ")} into ${mp3Count === 1 ? "the MP3" : "MP3s"}.${readOnly} Other tags stay as they are.`
 }
 
 function bytesOf(bytes: Uint8Array): ArrayBuffer {
@@ -601,7 +640,7 @@ function bytesOf(bytes: Uint8Array): ArrayBuffer {
 
 async function pickMp3s(): Promise<FileSystemFileHandle[]> {
   const picker = window.showOpenFilePicker
-  if (!picker) throw new Error("Open this page in Chrome or Edge to write energy back into the original MP3.")
+  if (!picker) throw new Error("Open this page in Chrome or Edge to write tags back into the original MP3.")
   try {
     return await picker({ ...pickerOptions, mode: "readwrite" })
   } catch (error) {
@@ -625,9 +664,30 @@ function statusLabel(status: TrackStatus): string {
   return "Failed"
 }
 
+function listViewTitle(view: ListView): string {
+  if (view === "unwritten") return "Download file, brightness, shape, and mixes with. These are not written into the file."
+  if (view === "visible") return "Download the rows in the current filter."
+  return "Download every track and every column."
+}
+
 function formatBpm(bpm: number | null): string {
   if (bpm == null) return "—"
   return Number.isInteger(bpm) ? String(bpm) : bpm.toFixed(1)
+}
+
+function listRow(track: Track): TrackListRow {
+  const analysis = track.analysis
+  return {
+    file: track.name,
+    key: analysis ? `${analysis.keyLabel}${analysis.uncertain ? " (low confidence)" : ""}` : "",
+    openKey: analysis?.openKey ?? "",
+    bpm: analysis?.bpm == null ? "" : formatBpm(analysis.bpm),
+    energy: analysis ? String(analysis.energy) : "",
+    brightness: analysis ? analysis.brightness.toFixed(2) : "",
+    shape: analysis?.shape ?? "",
+    mixesWith: analysis ? analysis.mixesWith.join(" ") : "",
+    status: track.error ?? statusLabel(track.status),
+  }
 }
 
 function messageOf(error: unknown): string {

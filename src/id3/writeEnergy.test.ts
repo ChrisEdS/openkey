@@ -58,6 +58,11 @@ function textFrame(version: number, id: string, text: string): number[] {
   return frame(version, id, [0, ...chars(text), 0])
 }
 
+function frame22(id: string, body: number[]): number[] {
+  const size = body.length
+  return [...chars(id), (size >> 16) & 0xff, (size >> 8) & 0xff, size & 0xff, ...body]
+}
+
 function energyFrame(version: number, value: string): number[] {
   return frame(version, "TXXX", [0, ...chars("EnergyLevel"), 0, ...chars(value), 0])
 }
@@ -202,11 +207,40 @@ describe("writeEnergy", () => {
     expect([...frameBody(output, "GEOB")]).toEqual(geob)
   })
 
-  it("refuses ID3v2.2 without changing the file", () => {
-    const input = Uint8Array.from([0x49, 0x44, 0x33, 2, 0, 0, 0, 0, 0, 0, 0xff, 0xfb])
-    const copy = input.slice()
-    expect(() => writeEnergy(input, 5)).toThrow(/ID3v2\.2/)
-    expect([...input]).toEqual([...copy])
+  it("saves an ID3v2.2 file as ID3v2.3 and keeps the other frames", () => {
+    const picture = [0, ...chars("JPG"), 3, 0, 9, 8, 7]
+    const input = buildTag({
+      version: 2,
+      padding: 0,
+      frames: [
+        frame22("TT2", [0, ...chars("Song"), 0]),
+        frame22("TKE", [0, ...chars("8A"), 0]),
+        frame22("TBP", [0, ...chars("100"), 0]),
+        frame22("TXX", [0, ...chars("EnergyLevel"), 0, ...chars("3"), 0]),
+        frame22("COM", [0, ...chars("eng"), 0, ...chars("Intro")]),
+        frame22("PIC", picture),
+      ],
+    })
+    const output = writeEnergy(input, 7)
+    expect(output[3]).toBe(3)
+    expect([...readId3(output).audio]).toEqual(audio)
+    expect(latinText(frameBody(output, "TIT2"))).toBe("Song")
+    expect(latinText(frameBody(output, "TKEY"))).toBe("8A")
+    expect(latinText(frameBody(output, "TBPM"))).toBe("100")
+    expect(readEnergyFields(output)).toEqual({ energyLevel: "7", comment: "Energy 7 Intro" })
+    const apic = frameBody(output, "APIC")
+    expect(latin1Text(apic.subarray(1, apic.indexOf(0, 1)))).toBe("image/jpeg")
+    expect([...apic.subarray(apic.length - 3)]).toEqual([9, 8, 7])
+  })
+
+  it("leaves a compressed ID3v2.2 tag unchanged", () => {
+    const input = Uint8Array.from([0x49, 0x44, 0x33, 2, 0, 0x40, 0, 0, 0, 0, 0xff, 0xfb])
+    expect(() => writeEnergy(input, 5)).toThrow(/unchanged/)
+  })
+
+  it("leaves an ID3v2.2 file unchanged when a frame cannot be kept", () => {
+    const input = buildTag({ version: 2, padding: 0, frames: [frame22("EQU", [1, 2, 3])] })
+    expect(() => writeEnergy(input, 5)).toThrow(/cannot keep/)
   })
 
   it("refuses a compressed comment", () => {
@@ -220,6 +254,10 @@ describe("writeEnergy", () => {
 function latinText(body: Uint8Array): string {
   const end = body.indexOf(0, 1)
   return String.fromCharCode(...body.subarray(1, end === -1 ? body.length : end))
+}
+
+function latin1Text(bytes: Uint8Array): string {
+  return String.fromCharCode(...bytes)
 }
 
 describe("writeTags", () => {

@@ -244,7 +244,7 @@ function readTag(data: Uint8Array): ParsedTag {
   }
 
   const versionByte = data[3]
-  if (versionByte === 2) throw new Error("ID3v2.2 is not supported")
+  if (versionByte === 2) return readV22(data)
   if (versionByte !== 3 && versionByte !== 4) throw new Error(`ID3v2.${versionByte} is not supported`)
   const version = versionByte as 3 | 4
   const flags = data[5]
@@ -297,6 +297,153 @@ function readTag(data: Uint8Array): ParsedTag {
     hadTag: true,
     hadFooter,
   }
+}
+
+const V22_TO_V23: Record<string, string> = {
+  BUF: "RBUF",
+  CNT: "PCNT",
+  COM: "COMM",
+  CRA: "AENC",
+  ETC: "ETCO",
+  GEO: "GEOB",
+  IPL: "IPLS",
+  LNK: "LINK",
+  MCI: "MCDI",
+  MLL: "MLLT",
+  PIC: "APIC",
+  POP: "POPM",
+  REV: "RVRB",
+  SLT: "SYLT",
+  STC: "SYTC",
+  TAL: "TALB",
+  TBP: "TBPM",
+  TCM: "TCOM",
+  TCO: "TCON",
+  TCR: "TCOP",
+  TDA: "TDAT",
+  TDY: "TDLY",
+  TEN: "TENC",
+  TFT: "TFLT",
+  TIM: "TIME",
+  TKE: "TKEY",
+  TLA: "TLAN",
+  TLE: "TLEN",
+  TMT: "TMED",
+  TOA: "TOPE",
+  TOF: "TOFN",
+  TOL: "TOLY",
+  TOR: "TORY",
+  TOT: "TOAL",
+  TP1: "TPE1",
+  TP2: "TPE2",
+  TP3: "TPE3",
+  TP4: "TPE4",
+  TPA: "TPOS",
+  TPB: "TPUB",
+  TRC: "TSRC",
+  TRD: "TRDA",
+  TRK: "TRCK",
+  TSI: "TSIZ",
+  TSS: "TSSE",
+  TT1: "TIT1",
+  TT2: "TIT2",
+  TT3: "TIT3",
+  TXT: "TEXT",
+  TXX: "TXXX",
+  TYE: "TYER",
+  UFI: "UFID",
+  ULT: "USLT",
+  WAF: "WOAF",
+  WAR: "WOAR",
+  WAS: "WOAS",
+  WCM: "WCOM",
+  WCP: "WCOP",
+  WPB: "WPUB",
+  WXX: "WXXX",
+}
+
+const IMAGE_MIME: Record<string, string> = {
+  JPG: "image/jpeg",
+  JPEG: "image/jpeg",
+  PNG: "image/png",
+  GIF: "image/gif",
+  BMP: "image/bmp",
+  TIF: "image/tiff",
+  TIFF: "image/tiff",
+}
+
+/** ID3v2.2 is read and saved as ID3v2.3. Frame bodies that already match stay as they are. */
+function readV22(data: Uint8Array): ParsedTag {
+  const flags = data[5]
+  if ((flags & 0x40) !== 0) {
+    throw new Error("This MP3 has a compressed ID3v2.2 tag, so it was left unchanged")
+  }
+  const tagBodySize = decodeSyncsafe(data, 6)
+  const audioStart = 10 + tagBodySize
+  if (audioStart > data.length) throw new Error("ID3 tag is larger than the file")
+
+  let body = data.slice(10, audioStart)
+  if ((flags & 0x80) !== 0) body = deunsync(body)
+
+  const frames: StoredFrame[] = []
+  let offset = 0
+  while (offset + 6 <= body.length) {
+    if (body[offset] === 0) break
+    const id = latin1(body.subarray(offset, offset + 3))
+    if (!/^[A-Z0-9]{3}$/.test(id)) break
+    const size = decodeUint24(body, offset + 3)
+    if (offset + 6 + size > body.length) {
+      throw new Error("ID3 frame is truncated, so the file was left unchanged")
+    }
+    const frameBody = body.slice(offset + 6, offset + 6 + size)
+    const mapped = V22_TO_V23[id]
+    if (id === "EQU" || id === "RVA" || id === "CRM" || !mapped) {
+      throw new Error("This MP3 has an ID3v2.2 frame this app cannot keep, so it was left unchanged")
+    }
+    frames.push(makeFrame(3, mapped, mapped === "APIC" ? pictureToApic(frameBody) : frameBody))
+    offset += 6 + size
+  }
+
+  if (offset < body.length && body[offset] !== 0) {
+    throw new Error("ID3 tag could not be parsed safely, so the file was left unchanged")
+  }
+
+  return {
+    version: 3,
+    frames,
+    audio: data.slice(audioStart),
+    tagBodySize: 0,
+    hadTag: true,
+    hadFooter: false,
+  }
+}
+
+function pictureToApic(body: Uint8Array): Uint8Array {
+  if (body.length < 5 || body[0] > 3) {
+    throw new Error("This MP3 has a picture frame that could not be kept, so it was left unchanged")
+  }
+  const format = latin1(body.subarray(1, 4)).trim().toUpperCase()
+  const mime = latin1Bytes(IMAGE_MIME[format] ?? "application/octet-stream")
+  const description = readEncoded(body, 5, body[0])
+  const image = body.subarray(description.next)
+  const apic = new Uint8Array(1 + mime.length + 1 + 1 + (description.next - 5) + image.length)
+  let offset = 0
+  apic[offset] = body[0]
+  offset += 1
+  apic.set(mime, offset)
+  offset += mime.length
+  apic[offset] = 0
+  offset += 1
+  apic[offset] = body[4]
+  offset += 1
+  apic.set(body.subarray(5, description.next), offset)
+  offset += description.next - 5
+  apic.set(image, offset)
+  return apic
+}
+
+function decodeUint24(data: Uint8Array, offset: number): number {
+  return (data[offset] << 16) | (data[offset + 1] << 8) | data[offset + 2]
 }
 
 function logicalBody(version: 3 | 4, frame: StoredFrame): Uint8Array {

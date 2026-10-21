@@ -3,7 +3,9 @@ import Essentia from "essentia.js/dist/essentia.js-core.es.js"
 import { EssentiaWASM } from "essentia.js/dist/essentia-wasm.es.js"
 import { brightnessFromRatio, energyFromFeatures, highFrequencyRatio, shapeFromOnsetRates } from "./energy.ts"
 import { isLowConfidence, keyLabel, mixesWith, openKeyCode } from "./openKey.ts"
+import { resampleLinear } from "./resample.ts"
 import type { Analysis } from "./types.ts"
+import { wasmErrorMessage } from "./wasmError.ts"
 
 type VectorFloat = { delete?: () => void }
 type EssentiaModule = {
@@ -44,12 +46,6 @@ type EssentiaModule = {
     tauMultiplier: number,
   ): { danceability: number; dfa?: VectorFloat }
   DynamicComplexity(signal: VectorFloat, frameSize: number, sampleRate: number): { dynamicComplexity: number; loudness?: number }
-  Resample(
-    signal: VectorFloat,
-    inputSampleRate: number,
-    outputSampleRate: number,
-    quality: number,
-  ): { signal: VectorFloat }
 }
 
 const EssentiaCtor = Essentia as unknown as new (wasm: unknown) => EssentiaModule
@@ -68,50 +64,70 @@ function release(vector: VectorFloat | null): void {
   }
 }
 
+const KEY_FRAME = 4096
+const SILENCE = 1e-5
+
 function analyze(samples: Float32Array, sampleRate: number): Analysis {
-  if (samples.length === 0) throw new Error("This file has no audio to analyze")
+  prepareSamples(samples)
+  if (samples.length === 0 || peak(samples) < SILENCE) throw new Error("This file has no audible audio")
+  if (samples.length < KEY_FRAME) throw new Error("This file is too short to analyze")
 
   const engine = library()
-  const keySignal = engine.arrayToVector(samples)
-  const bpmSignal = engine.arrayToVector(samples)
+  const key = estimateKey(engine, samples, sampleRate)
+  const code = openKeyCode(key.key, key.scale)
+  if (!code) throw new Error(`Unrecognized key ${key.key} ${key.scale}`)
+  const strength = Number(key.strength)
+  const portrait = trackPortrait(engine, samples, sampleRate)
+  return {
+    keyLabel: keyLabel(key.key, key.scale),
+    openKey: code,
+    strength,
+    uncertain: isLowConfidence(strength),
+    bpm: estimateBpm(engine, samples, sampleRate),
+    energy: portrait.energy,
+    brightness: portrait.brightness,
+    shape: portrait.shape,
+    mixesWith: mixesWith(code),
+  }
+}
+
+function prepareSamples(samples: Float32Array): void {
+  for (let index = 0; index < samples.length; index++) {
+    if (!Number.isFinite(samples[index]!)) samples[index] = 0
+  }
+}
+
+function peak(samples: Float32Array): number {
+  let max = 0
+  for (let index = 0; index < samples.length; index++) {
+    const value = Math.abs(samples[index]!)
+    if (value > max) max = value
+  }
+  return max
+}
+
+function estimateKey(engine: EssentiaModule, samples: Float32Array, sampleRate: number): { key: string; scale: string; strength: number } {
+  const signal = engine.arrayToVector(samples)
   try {
-    const key = engine.KeyExtractor(
-      keySignal,
-      true,
-      4096,
-      4096,
-      12,
-      3500,
-      60,
-      25,
-      0.2,
-      "bgate",
-      sampleRate,
-      0.0001,
-      440,
-      "cosine",
-      "hann",
-    )
-    const tempo = engine.PercivalBpmEstimator(bpmSignal, 1024, 2048, 128, 128, 210, 50, sampleRate)
-    const code = openKeyCode(key.key, key.scale)
-    if (!code) throw new Error(`Unrecognized key ${key.key} ${key.scale}`)
-    const strength = Number(key.strength)
-    const bpm = Number(tempo.bpm)
-    const portrait = trackPortrait(engine, samples, sampleRate)
-    return {
-      keyLabel: keyLabel(key.key, key.scale),
-      openKey: code,
-      strength,
-      uncertain: isLowConfidence(strength),
-      bpm: Number.isFinite(bpm) && bpm > 0 ? Math.round(bpm * 10) / 10 : null,
-      energy: portrait.energy,
-      brightness: portrait.brightness,
-      shape: portrait.shape,
-      mixesWith: mixesWith(code),
-    }
+    return engine.KeyExtractor(signal, true, KEY_FRAME, KEY_FRAME, 12, 3500, 60, 25, 0.2, "bgate", sampleRate, 0.0001, 440, "cosine", "hann")
+  } catch (error) {
+    throw new Error(wasmErrorMessage(EssentiaWASM as { HEAPU8?: Uint8Array; HEAP32?: Int32Array }, error))
   } finally {
-    release(keySignal)
-    release(bpmSignal)
+    release(signal)
+  }
+}
+
+function estimateBpm(engine: EssentiaModule, samples: Float32Array, sampleRate: number): number | null {
+  const signal = engine.arrayToVector(samples)
+  try {
+    const tempo = engine.PercivalBpmEstimator(signal, 1024, 2048, 128, 128, 210, 50, sampleRate)
+    const bpm = Number(tempo.bpm)
+    return Number.isFinite(bpm) && bpm > 0 ? Math.round(bpm * 10) / 10 : null
+  } catch {
+    // A missing tempo still leaves key and energy. The thrown value is a wasm pointer.
+    return null
+  } finally {
+    release(signal)
   }
 }
 
@@ -175,23 +191,9 @@ type PreparedSignal = {
 }
 
 function signalAt44100(engine: EssentiaModule, samples: Float32Array, sampleRate: number): PreparedSignal {
-  const original = engine.arrayToVector(samples)
-  if (Math.round(sampleRate) === 44100) {
-    return { signal: original, release: () => release(original) }
-  }
-  try {
-    const resampled = engine.Resample(original, sampleRate, 44100, 1).signal
-    return {
-      signal: resampled,
-      release: () => {
-        release(resampled)
-        release(original)
-      },
-    }
-  } catch (error) {
-    release(original)
-    throw error
-  }
+  const atRate = Math.round(sampleRate) === 44100 ? samples : resampleLinear(samples, sampleRate, 44100)
+  const signal = engine.arrayToVector(atRate)
+  return { signal, release: () => release(signal) }
 }
 
 function finite(value: number): number {
@@ -210,7 +212,6 @@ scope.onmessage = (event) => {
   try {
     scope.postMessage({ id, result: analyze(samples, sampleRate) })
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    scope.postMessage({ id, error: message })
+    scope.postMessage({ id, error: wasmErrorMessage(EssentiaWASM as { HEAPU8?: Uint8Array; HEAP32?: Int32Array }, error) })
   }
 }

@@ -1,6 +1,6 @@
 # openkey
 
-openkey reads an MP3 in the browser and tells you the musical key, the Open Key code, the tempo, and how the track feels. You choose which of those facts are written back into the original file. The audio is not re-encoded. Artwork, DJ markers, and every tag you leave unselected stay as they are.
+openkey reads a track in the browser and tells you the musical key, the Open Key code, the tempo, and how the track feels. You choose which of those facts are written back into an MP3. WAV, AIFF, FLAC, Ogg, Opus, M4A, and AAC can be analyzed too. Tags are written into MP3s only, and the audio is not re-encoded. Artwork, DJ markers, and every tag you leave unselected stay as they are.
 
 [Donate via GitHub Sponsors](https://github.com/sponsors/ChrisEdS)
 
@@ -12,7 +12,7 @@ openkey reads an MP3 in the browser and tells you the musical key, the Open Key 
 
 ![openkey with key, energy, brightness, and shape for a few tracks](docs/screenshot.png)
 
-Chrome or Edge can overwrite the file in place. Safari can show a result, but it cannot write the original MP3.
+Chrome or Edge can overwrite an MP3 in place. Safari can show a result, but it cannot write the original file.
 
 ## Run
 
@@ -21,7 +21,7 @@ npm install
 npm run dev
 ```
 
-Open the address Vite prints. Drop MP3s on the page, or choose them. Analysis runs one file at a time. The track list scrolls on its own, and the status filters stay in view.
+Open the address Vite prints. Drop audio on the page, or choose it. Analysis runs one file at a time. The track list scrolls on its own, and the status filters stay in view.
 
 ## What a row means
 
@@ -37,6 +37,14 @@ Open the address Vite prints. Drop MP3s on the page, or choose them. Analysis ru
 | Status | Queued, analyzing, ready, saving, saved, or failed. Remove drops that row. It does not delete the MP3. |
 
 Brightness and shape are there to read. They are not written into the file.
+
+Key and BPM say whether two tracks can play together. Energy, brightness, and shape say how the blend goes.
+
+Energy is the size of the step. Move by about one point. A jump from 4 to 9 is a new section, not a blend.
+
+Brightness is the top end. Tracks within about 0.15 of each other blend with less EQ. A wider gap is a contrast: a darker track into a brighter one feels like a lift, and two bright tracks in a long blend pile up hats and hiss.
+
+Shape is the mix point. **L** can be mixed almost anywhere. **B** is already rising, so bring the next track in before that rise. **D** has a quiet stretch and a peak; the quiet part is the mix point. A simple run is L, then B, then D. After a D peak, an L track resets the section.
 
 The same file always produces the same energy, brightness, and shape. A track that was tagged earlier keeps the old tags until you analyze it again and write.
 
@@ -72,7 +80,7 @@ Turn Comment off and the energy tag is still written. The existing comment stays
 | BPM | `TBPM`, the same number shown in the table |
 | Comment | With Energy on, `8A - Energy 7` in front of the existing comment |
 
-ID3v2.2 files are refused. If a frame that has to change is compressed or encrypted, the file is left unchanged. The first save asks once for the folder that contains the tracks. After that, Chrome can update every MP3 in that folder without asking again for each file.
+ID3v2.2 files are saved as ID3v2.3, with the older frame names translated and the audio left as it is. A compressed v2.2 tag, or a frame this app cannot carry over, is left unchanged. If a frame that has to change is compressed or encrypted, the file is left unchanged. The first save asks once for the folder that contains the tracks. After that, Chrome can update every MP3 in that folder without asking again for each file.
 
 ## How the numbers are made
 

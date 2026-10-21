@@ -43,7 +43,7 @@ export function analyzeSamples(samples: Float32Array, sampleRate: number): Promi
 export async function decodeAudio(file: File): Promise<{ samples: Float32Array; sampleRate: number }> {
   const audioContext = new AudioContext()
   try {
-    const decoded = await audioContext.decodeAudioData(await file.arrayBuffer())
+    const decoded = await decodeBuffer(audioContext, await file.arrayBuffer())
     const samples = new Float32Array(decoded.length)
     for (let channel = 0; channel < decoded.numberOfChannels; channel++) {
       const data = decoded.getChannelData(channel)
@@ -55,6 +55,15 @@ export async function decodeAudio(file: File): Promise<{ samples: Float32Array; 
     return { samples, sampleRate: decoded.sampleRate }
   } finally {
     await audioContext.close()
+  }
+}
+
+async function decodeBuffer(audioContext: AudioContext, bytes: ArrayBuffer): Promise<AudioBuffer> {
+  try {
+    return await audioContext.decodeAudioData(bytes)
+  } catch (error) {
+    if (error instanceof DOMException) throw new Error("This browser could not decode this file")
+    throw error
   }
 }
 
