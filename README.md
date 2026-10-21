@@ -21,7 +21,7 @@ npm install
 npm run dev
 ```
 
-Open the address Vite prints. Drop audio or a folder on the page, or choose files or folders. Chrome asks for one folder at a time; cancel when you are done. Each folder joins the queue immediately, including its subfolders. Analysis runs one file at a time. The track list scrolls on its own, and the status filters stay in view.
+Open the address Vite prints. Drop audio or a folder on the page, or choose files or folders. A dropped folder can be read at once. Chrome asks once for permission to edit it before tags are written. Chrome asks for one folder at a time; cancel when you are done. Each folder joins the queue immediately, including its subfolders. Analysis runs one file at a time. Stop finishes the current file and leaves the drive alone. Resume continues the queue. This page cannot eject a USB drive. When nothing is reading or writing, eject it in Finder. If macOS still says the drive is in use, close the tab. A long list stays folded at 20 rows until you show every row. The status filters stay in view.
 
 ## What a row means
 
@@ -82,7 +82,7 @@ Turn Comment off and the energy tag is still written. The existing comment stays
 | BPM | `TBPM`, the same number shown in the table |
 | Comment | With Energy on, `8A - Energy 7` in front of the existing comment |
 
-ID3v2.2 files are saved as ID3v2.3, with the older frame names translated and the audio left as it is. A compressed v2.2 tag, or a frame this app cannot carry over, is left unchanged. If a frame that has to change is compressed or encrypted, the file is left unchanged. Saving uses the folders you already chose. If a track sits in a folder that was not chosen yet, Chrome asks for that folder, then for the next one, until every MP3 is saved or you cancel. Each folder is remembered.
+ID3v2.2 files are saved as ID3v2.3, with the older frame names translated and the audio left as it is. A compressed v2.2 tag, or a frame this app cannot carry over, is left unchanged. If a frame that has to change is compressed or encrypted, the file is left unchanged. Saving uses the folders you already chose. Chrome asks once for a folder, not once per file. If a track sits in a folder that was not chosen yet, Chrome asks for that folder. Each folder is remembered.
 
 ## How the numbers are made
 

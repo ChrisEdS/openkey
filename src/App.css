@@ -2,7 +2,7 @@ main {
   width: min(1120px, calc(100% - 32px));
   min-height: 100%;
   margin: 0 auto;
-  padding: 36px 0 48px;
+  padding: 36px 0 96px;
   display: flex;
   flex-direction: column;
 }
@@ -42,7 +42,15 @@ main {
 }
 
 .sponsor {
-  margin-top: 36px;
+  position: fixed;
+  z-index: 5;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  justify-content: center;
+  padding: 0 16px 12px;
+  pointer-events: none;
 }
 
 .sponsor h2 {
@@ -60,18 +68,30 @@ main {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  width: min(1120px, 100%);
   min-height: 48px;
-  padding: 6px 8px 6px 16px;
+  padding: 6px 16px 6px 8px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: var(--paper);
+  pointer-events: auto;
+  box-shadow: 0 10px 28px rgb(0 0 0 / 28%);
+}
+
+.sponsor-lead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
 }
 
 .sponsor-main {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 16px;
   min-width: 0;
+  margin-left: auto;
 }
 
 .sponsor-person {
@@ -423,9 +443,9 @@ button:disabled {
 .toolbar {
   flex: none;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px 16px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
 }
 
 .stats {
@@ -441,26 +461,61 @@ button:disabled {
   font-size: 14px;
 }
 
-.toolbar p.legend {
+.toolbar p.legend,
+.toolbar p.drive {
   font-size: 13px;
 }
 
-.actions {
+.actions,
+.actions-main,
+.actions-side {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
 
-.list-view select {
+.actions {
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.actions-side {
+  margin-left: auto;
+}
+
+.save-list {
+  display: flex;
+  align-items: stretch;
   border: 1px solid var(--line);
   border-radius: 999px;
-  padding: 8px 12px;
-  background: transparent;
-  color: var(--ink);
+}
+
+.save-list button.quiet {
+  border: 0;
+  border-radius: 999px 0 0 999px;
+  border-right: 1px solid var(--line);
+}
+
+.save-list select {
+  appearance: none;
+  width: 36px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0 999px 999px 0;
+  background-color: transparent;
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink) 50%), linear-gradient(135deg, var(--ink) 50%, transparent 50%);
+  background-position: calc(50% - 3px) center, calc(50% + 3px) center;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  color: transparent;
   font: inherit;
-  font-weight: 560;
   cursor: pointer;
+}
+
+.save-list select option {
+  color: var(--ink);
 }
 
 button.quiet {
@@ -480,6 +535,13 @@ button.quiet[aria-pressed="true"] {
 button.tiny {
   padding: 4px 8px;
   font-size: 12px;
+}
+
+.list-fold {
+  display: block;
+  width: fit-content;
+  margin-top: 12px;
+  margin-left: auto;
 }
 
 .table-wrap {

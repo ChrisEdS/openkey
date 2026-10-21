@@ -3,7 +3,7 @@ import { analyzeFile } from "./analysis/client.ts"
 import type { Analysis } from "./analysis/types.ts"
 import { audioPickerTypes, collectAudioFiles, isAudioFile, isMp3Name } from "./files/audio.ts"
 import { ALL_COLUMNS, trackListCsv, UNWRITTEN_COLUMNS, type TrackListRow } from "./files/trackList.ts"
-import { canWrite, loadLibraries, mergeFolders, pickFolder, rememberFolder, saveLibraries, writableFile } from "./files/library.ts"
+import { canWrite, ensureWrite, loadLibraries, mergeFolders, pickFolder, rememberFolder, saveLibraries, writableFile } from "./files/library.ts"
 import { queueFolderGroups, waitingIds } from "./files/queue.ts"
 import { formatMixedInKeyComment, writeTags } from "./id3/writeEnergy.ts"
 import "./App.css"
@@ -21,6 +21,8 @@ type Track = {
   error?: string
   analysis?: Analysis
 }
+
+const LIST_PREVIEW = 20
 
 const pickerOptions = {
   multiple: true,
@@ -40,6 +42,7 @@ export default function App() {
   const [saveComment, setSaveComment] = useState(true)
   const [filter, setFilter] = useState<StatusFilter>("all")
   const [listView, setListView] = useState<ListView>("unwritten")
+  const [listExpanded, setListExpanded] = useState(false)
   const [autoSave, setAutoSave] = useState(readAutoSave)
   const autoSaveRef = useRef(autoSave)
   const selectionRef = useRef<SaveSelection>({ energy: true, key: false, openKey: false, bpm: false, comment: true })
@@ -53,6 +56,8 @@ export default function App() {
   const tracksRef = useRef<Track[]>([])
   const queueRef = useRef<string[]>([])
   const runningRef = useRef(false)
+  const stoppedRef = useRef(false)
+  const [stopped, setStopped] = useState(false)
   const foldersRef = useRef<FileSystemDirectoryHandle[]>([])
   const canPick = typeof window.showOpenFilePicker === "function"
   const canPickFolder = typeof window.showDirectoryPicker === "function"
@@ -90,6 +95,7 @@ export default function App() {
     runningRef.current = true
     try {
       for (;;) {
+        if (stoppedRef.current) break
         const id = queueRef.current.shift()
         if (!id) break
         const track = tracksRef.current.find((item) => item.id === id)
@@ -100,14 +106,14 @@ export default function App() {
           const analysis = await analyzeFile(file)
           if (!tracksRef.current.some((item) => item.id === id)) continue
           patch(id, { status: "ready", analysis })
-          if (autoSaveRef.current && isMp3Name(track.name)) await saveIfWritable({ ...track, analysis })
+          if (!stoppedRef.current && autoSaveRef.current && isMp3Name(track.name)) await saveIfWritable({ ...track, analysis })
         } catch (error) {
           patch(id, { status: "error", error: messageOf(error) })
         }
       }
     } finally {
       runningRef.current = false
-      if (queueRef.current.length > 0) void pump()
+      if (!stoppedRef.current && queueRef.current.length > 0) void pump()
     }
   }
 
@@ -172,15 +178,18 @@ export default function App() {
   async function acceptHandles(pendingHandles: Array<Promise<FileSystemHandle | null>>) {
     const skipped: string[] = []
     const emptyFolders: string[] = []
+    const needsEdit: string[] = []
     const files: Array<{ handle: FileSystemFileHandle; directory?: FileSystemDirectoryHandle }> = []
     for (const pending of pendingHandles) {
       const handle = await pending
       if (!handle) continue
       if (handle.kind === "directory") {
+        const canEdit = await ensureWrite(handle)
         await remember(handle)
         const found = await collectAudioFiles(handle)
         if (found.length === 0) emptyFolders.push(handle.name)
         else files.push(...found.map((file) => ({ handle: file, directory: handle })))
+        if (!canEdit && found.length > 0) needsEdit.push(handle.name)
         continue
       }
       if (!isAudioFile(handle)) {
@@ -195,6 +204,8 @@ export default function App() {
     else if (emptyFolders.length > 1) notes.push(`${emptyFolders.length} folders have no audio files.`)
     if (skipped.length === 1) notes.push(`Skipped ${skipped[0]}. Only audio files can be read.`)
     else if (skipped.length > 1) notes.push(`Skipped ${skipped.length} items. Only audio files can be read.`)
+    if (needsEdit.length === 1) notes.push(`Allow editing in ${needsEdit[0]} when you save tags.`)
+    else if (needsEdit.length > 1) notes.push("Allow editing in the dropped folders when you save tags.")
     setNotice(notes.join(" "))
     if (accepted.length > 0) enqueue(accepted)
   }
@@ -250,21 +261,27 @@ export default function App() {
     const readyIds = new Set(ready.map((track) => track.id))
     commit(tracksRef.current.map((track) => (readyIds.has(track.id) ? { ...track, error: undefined } : track)))
     try {
+      const asked = new Set<FileSystemDirectoryHandle>()
+      await allowTrackFolders(ready, asked)
       let remaining: Track[] = []
       for (const track of ready) {
-        const handle = await locateTrack(track)
-        if (!handle) {
+        if (stoppedRef.current) break
+        const located = await locateTrack(track)
+        if (!located) {
           remaining.push(track)
           continue
         }
-        await writeTrack(track, handle, selection)
+        await writeTrack({ ...track, directory: located.directory ?? track.directory }, located.handle, selection)
       }
 
       while (remaining.length > 0) {
+        if (stoppedRef.current) break
         setNotice(
-          remaining.length === ready.length
-            ? "Choose the folder that contains these files."
-            : `${remaining.length} ${remaining.length === 1 ? "file is" : "files are"} in another folder. Choose that folder, or cancel.`,
+          foldersRef.current.length > 0
+            ? "These files are not in the folders already added. Choose the folder that contains them, or cancel."
+            : remaining.length === ready.length
+              ? "Choose the folder that contains these files."
+              : `${remaining.length} ${remaining.length === 1 ? "file is" : "files are"} in another folder. Choose that folder, or cancel.`,
         )
         const access = await pickFolder()
         if (!access.ok) {
@@ -282,20 +299,25 @@ export default function App() {
         const still: Track[] = []
         let wrote = 0
         for (const track of remaining) {
+          if (stoppedRef.current) {
+            still.push(track)
+            continue
+          }
           const handle = await findInFolder(access.directory, track.handle)
           if (!handle) {
             still.push(track)
             continue
           }
-          if (await writeTrack(track, handle, selection)) wrote += 1
+          if (await writeTrack({ ...track, directory: access.directory }, handle, selection)) wrote += 1
         }
+        if (stoppedRef.current) break
         if (wrote === 0) {
-          setNotice("None of the remaining files are in that folder. Choose the folder that contains them, or cancel.")
-          continue
+          setNotice("None of the remaining files are in that folder.")
+          break
         }
         remaining = still
       }
-      setNotice("")
+      if (!stoppedRef.current) setNotice("")
     } finally {
       setWriting(false)
     }
@@ -312,21 +334,46 @@ export default function App() {
     if (on) void writeAll()
   }
 
+  async function allowFolder(folder: FileSystemDirectoryHandle, asked: Set<FileSystemDirectoryHandle>) {
+    if (await canWrite(folder)) return true
+    if (asked.has(folder)) return false
+    asked.add(folder)
+    return ensureWrite(folder)
+  }
+
+  async function allowTrackFolders(tracks: Track[], asked: Set<FileSystemDirectoryHandle>) {
+    const folders: FileSystemDirectoryHandle[] = []
+    for (const track of tracks) {
+      if (track.directory && !folders.includes(track.directory)) folders.push(track.directory)
+    }
+    for (const folder of folders) await allowFolder(folder, asked)
+  }
+
   async function saveIfWritable(track: Track) {
     const selection = selectionRef.current
     if (!hasSelection(selection)) return
-    const handle = await locateTrack(track)
-    if (!handle) return
-    await writeTrack(track, handle, selection)
+    const located = await locateTrack(track)
+    if (!located) return
+    const folder = located.directory ?? track.directory
+    const allowed = folder ? await canWrite(folder) : await canWrite(located.handle)
+    if (!allowed) return
+    await writeTrack({ ...track, directory: folder }, located.handle, selection)
   }
 
-  async function locateTrack(track: Track): Promise<FileSystemFileHandle | null> {
-    if (await canWrite(track.handle)) return track.handle
-    if (track.directory && (await canWrite(track.directory))) return track.handle
+  async function locateTrack(
+    track: Track,
+  ): Promise<{ handle: FileSystemFileHandle; directory?: FileSystemDirectoryHandle } | null> {
+    const folders: FileSystemDirectoryHandle[] = []
+    if (track.directory) folders.push(track.directory)
     for (const folder of foldersRef.current) {
-      const found = await findInFolder(folder, track.handle)
-      if (found) return found
+      if (!folders.includes(folder)) folders.push(folder)
     }
+    for (const folder of folders) {
+      if (!(await canWrite(folder))) continue
+      const handle = await findInFolder(folder, track.handle)
+      if (handle) return { handle, directory: folder }
+    }
+    if (await canWrite(track.handle)) return { handle: track.handle, directory: track.directory }
     return null
   }
 
@@ -342,6 +389,11 @@ export default function App() {
   }
 
   async function writeTrack(track: Track, handle: FileSystemFileHandle, selection: SaveSelection): Promise<boolean> {
+    const folderReady = track.directory ? await canWrite(track.directory) : false
+    if (!folderReady && !(await canWrite(handle))) {
+      patch(track.id, { status: "ready" })
+      return false
+    }
     patch(track.id, { status: "writing", error: undefined, handle })
     try {
       const file = await handle.getFile()
@@ -356,6 +408,17 @@ export default function App() {
       patch(track.id, { status: "ready", error: messageOf(error) })
       return false
     }
+  }
+
+  function stopQueue() {
+    stoppedRef.current = true
+    setStopped(true)
+  }
+
+  function resumeQueue() {
+    stoppedRef.current = false
+    setStopped(false)
+    void pump()
   }
 
   function removeFolder(directory: FileSystemDirectoryHandle) {
@@ -388,6 +451,8 @@ export default function App() {
   function clearTracks() {
     if (writing) return
     queueRef.current = []
+    stoppedRef.current = false
+    setStopped(false)
     commit([])
     setFilter("all")
     setNotice("")
@@ -406,6 +471,7 @@ export default function App() {
   }
 
   const analyzing = tracks.some((track) => track.status === "queued" || track.status === "analyzing")
+  const reading = writing || tracks.some((track) => track.status === "analyzing" || track.status === "writing")
   const selection = { energy: saveEnergy, key: saveKey, openKey: saveOpenKey, bpm: saveBpm, comment: saveEnergy && saveComment }
   const readyTracks = tracks.filter(
     (track) => (track.status === "ready" || track.status === "written") && track.analysis,
@@ -415,6 +481,7 @@ export default function App() {
   const selectedNames = fieldNames(selection)
   const tally = tallyTracks(tracks)
   const visible = tracks.filter((track) => matchesFilter(track, filter))
+  const shown = listExpanded ? visible : visible.slice(0, LIST_PREVIEW)
   const folderGroups = queueFolderGroups(tracks)
   const failedCount = tracks.filter((track) => track.status === "error").length
 
@@ -553,30 +620,48 @@ export default function App() {
               <FilterButton label="Failed" count={tally.failed} pressed={filter === "failed"} onClick={() => setFilter("failed")} />
             </div>
             <div className="actions">
-              <button
-                type="button"
-                onClick={() => void writeAll()}
-                disabled={savableCount === 0 || analyzing || writing || selectedNames.length === 0}
-              >
-                {writing ? "Saving…" : saveButtonLabel(selectedNames, savableCount)}
-              </button>
-              <label className="list-view">
-                <span className="sr-only">List to save</span>
-                <select value={listView} onChange={(event) => setListView(event.target.value as ListView)}>
-                  <option value="unwritten">Not written</option>
-                  <option value="visible">This view</option>
-                  <option value="all">Whole table</option>
-                </select>
-              </label>
-              <button type="button" className="quiet" onClick={saveTrackList} title={listViewTitle(listView)}>
-                Save list
-              </button>
-              <button type="button" className="quiet" onClick={retryFailed} disabled={failedCount === 0 || writing}>
-                Retry failed
-              </button>
-              <button type="button" className="quiet" onClick={clearTracks} disabled={writing}>
-                Clear list
-              </button>
+              <div className="actions-main">
+                {analyzing || writing || stopped ? (
+                  <button
+                    type="button"
+                    className="quiet"
+                    onClick={stopped ? resumeQueue : stopQueue}
+                    title={stopped ? "Continue the queue." : "Finish the current file, then leave the drive alone."}
+                  >
+                    {stopped ? "Resume" : "Stop"}
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => void writeAll()}
+                  disabled={savableCount === 0 || analyzing || writing || selectedNames.length === 0}
+                >
+                  {writing ? "Saving…" : saveButtonLabel(selectedNames, savableCount)}
+                </button>
+              </div>
+              <div className="actions-side">
+                <div className="save-list">
+                  <button type="button" className="quiet" onClick={saveTrackList} title={listViewTitle(listView)}>
+                    {saveListLabel(listView)}
+                  </button>
+                  <select
+                    aria-label="Which list to save"
+                    value={listView}
+                    title={listViewTitle(listView)}
+                    onChange={(event) => setListView(event.target.value as ListView)}
+                  >
+                    <option value="unwritten">Not written</option>
+                    <option value="visible">This view</option>
+                    <option value="all">Whole table</option>
+                  </select>
+                </div>
+                <button type="button" className="quiet" onClick={retryFailed} disabled={failedCount === 0 || writing}>
+                  Retry failed
+                </button>
+                <button type="button" className="quiet" onClick={clearTracks} disabled={writing}>
+                  Clear list
+                </button>
+              </div>
             </div>
             <p>
               {analyzing
@@ -588,6 +673,13 @@ export default function App() {
             <p className="legend">
               Energy is 1–10 intensity. Brightness is the share above 5 kHz. Shape is L level, B builds, D jumps. Brightness and shape are not saved.
             </p>
+            {stopped ? (
+              <p className="drive" role="status">
+                {reading
+                  ? "Stopping after this file. Do not eject the drive yet."
+                  : "Nothing is reading or writing the drive. Eject it in Finder. This page cannot eject a drive. If macOS still says it is in use, close this tab."}
+              </p>
+            ) : null}
           </div>
           <div className="table-wrap">
             <table>
@@ -606,33 +698,30 @@ export default function App() {
                 </tr>
               </thead>
               <tbody>
-                {visible.length === 0 ? (
+                {shown.length === 0 ? (
                   <tr>
                     <td className="empty" colSpan={9}>
                       Nothing in this view.
                     </td>
                   </tr>
                 ) : (
-                  visible.map((track) => <TrackRow key={track.id} track={track} onRemove={removeTrack} />)
+                  shown.map((track) => <TrackRow key={track.id} track={track} onRemove={removeTrack} />)
                 )}
               </tbody>
             </table>
           </div>
+          {visible.length > LIST_PREVIEW ? (
+            <button type="button" className="quiet list-fold" onClick={() => setListExpanded((open) => !open)}>
+              {listExpanded ? `Show ${LIST_PREVIEW}` : `Show all ${visible.length}`}
+            </button>
+          ) : null}
         </div>
       ) : null}
 
       <aside className="sponsor">
         <div className="sponsor-row">
-          <div className="sponsor-main">
-            <h2>Sponsor this project</h2>
-            <a className="sponsor-person" href="https://github.com/ChrisEdS">
-              <img src="/chriseds.png" alt="" width="28" height="28" />
-              <span className="sponsor-login">ChrisEdS</span>
-              <span className="sponsor-name">Christian Scherm</span>
-            </a>
-            <a className="sponsor-more" href="https://github.com/sponsors">Learn more</a>
-          </div>
-          <a className="sponsor-heart" href="https://github.com/sponsors/ChrisEdS" aria-label="Sponsor ChrisEdS">
+          <div className="sponsor-lead">
+            <a className="sponsor-heart" href="https://github.com/sponsors/ChrisEdS" aria-label="Sponsor ChrisEdS">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path
                 fill="none"
@@ -641,7 +730,17 @@ export default function App() {
                 d="M12 19.4c-4.6-2.8-7.2-5.5-7.2-8.6A3.9 3.9 0 0 1 12 8.1a3.9 3.9 0 0 1 7.2 2.7c0 3.1-2.6 5.8-7.2 8.6Z"
               />
             </svg>
-          </a>
+            </a>
+            <h2>Sponsor this project</h2>
+          </div>
+          <div className="sponsor-main">
+            <a className="sponsor-person" href="https://github.com/ChrisEdS">
+              <img src="/chriseds.png" alt="" width="28" height="28" />
+              <span className="sponsor-login">ChrisEdS</span>
+              <span className="sponsor-name">Christian Scherm</span>
+            </a>
+            <a className="sponsor-more" href="https://github.com/sponsors">Learn more</a>
+          </div>
         </div>
       </aside>
     </main>
@@ -841,6 +940,12 @@ function statusLabel(status: TrackStatus): string {
   return "Failed"
 }
 
+function saveListLabel(view: ListView): string {
+  if (view === "unwritten") return "Save not written"
+  if (view === "visible") return "Save this view"
+  return "Save whole table"
+}
+
 function listViewTitle(view: ListView): string {
   if (view === "unwritten") return "Download file, brightness, shape, and mixes with. These are not written into the file."
   if (view === "visible") return "Download the rows in the current filter."
@@ -883,6 +988,7 @@ function readAutoSave(): boolean {
 
 function messageOf(error: unknown): string {
   if (error instanceof DOMException && error.name === "AbortError") return "Save was cancelled"
+  if (error instanceof Error && /user activation/i.test(error.message)) return "Allow editing in this folder, then save again."
   if (error instanceof Error && error.message) return error.message
   return "Something went wrong"
 }

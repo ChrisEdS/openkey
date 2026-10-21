@@ -14,6 +14,20 @@ export async function canWrite(handle: FileSystemHandle): Promise<boolean> {
   return (await handle.queryPermission({ mode: "readwrite" })) === "granted"
 }
 
+/** Restores write access on a folder the site already knows. One prompt names that folder. */
+export async function ensureWrite(handle: FileSystemHandle): Promise<boolean> {
+  if (!handle.queryPermission) return false
+  const options: FileSystemHandlePermissionDescriptor = { mode: "readwrite" }
+  try {
+    const state = await handle.queryPermission(options)
+    if (state === "granted") return true
+    if (state !== "prompt" || !handle.requestPermission) return false
+    return (await handle.requestPermission(options)) === "granted"
+  } catch {
+    return false
+  }
+}
+
 export async function loadLibrary(): Promise<FileSystemDirectoryHandle | null> {
   const folders = await loadLibraries()
   return folders[0] ?? null
@@ -45,9 +59,16 @@ export async function rememberFolder(
   folders: FileSystemDirectoryHandle[],
   folder: FileSystemDirectoryHandle,
 ): Promise<FileSystemDirectoryHandle[]> {
-  for (const existing of folders) {
+  for (let index = 0; index < folders.length; index++) {
+    const existing = folders[index]
+    if (!existing) continue
     try {
-      if (await existing.isSameEntry(folder)) return folders
+      if (await existing.isSameEntry(folder)) {
+        if (existing === folder) return folders
+        const next = folders.slice()
+        next[index] = folder
+        return next
+      }
     } catch {
       // A failed identity check is not a reason to drop a folder the site can still use.
     }
