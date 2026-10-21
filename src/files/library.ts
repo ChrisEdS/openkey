@@ -14,6 +14,27 @@ export async function canWrite(handle: FileSystemHandle): Promise<boolean> {
   return (await handle.queryPermission({ mode: "readwrite" })) === "granted"
 }
 
+export type AutoSaveAction = "write" | "wait" | "skip"
+
+/**
+ * A listed file often reports readwrite "prompt" even when its folder is already granted.
+ * That prompt must not block a write, and it must not open a per-file save dialog.
+ * Write when the folder or that exact file is already granted. Otherwise wait for one click.
+ */
+export function autoSaveAction(input: {
+  enabled: boolean
+  mp3: boolean
+  hasAnalysis: boolean
+  selected: boolean
+  stopped: boolean
+  directoryGranted: boolean
+  fileGranted: boolean
+}): AutoSaveAction {
+  if (!input.enabled || !input.mp3 || !input.hasAnalysis || !input.selected || input.stopped) return "skip"
+  if (input.directoryGranted || input.fileGranted) return "write"
+  return "wait"
+}
+
 /** True when the site can already look inside this folder. Does not prompt. */
 export async function canRead(handle: FileSystemHandle): Promise<boolean> {
   if (!handle.queryPermission) return false
@@ -132,8 +153,10 @@ export async function acquireLibrary(saved: FileSystemDirectoryHandle | null): P
 }
 
 /**
- * A file handle obtained from a folder that already has readwrite permission.
- * Dropped file handles are not returned: createWritable on those opens a save dialog per file.
+ * A file handle taken from a folder that already has readwrite permission.
+ * The handle returned by a folder listing stays "prompt" for readwrite; createWritable on it
+ * opens a save dialog per file or never settles. Re-fetch with getFileHandle instead.
+ * Does not request permission and does not walk the folder.
  */
 export async function grantedWriteHandle(
   directory: FileSystemDirectoryHandle | undefined,
@@ -141,13 +164,19 @@ export async function grantedWriteHandle(
   path?: readonly string[],
 ): Promise<FileSystemFileHandle | null> {
   try {
-    if (directory) {
-      if (!(await canWrite(directory))) return null
+    if (directory && (await canWrite(directory))) {
       if (path && path.length > 0) {
         const located = await fileAtPath(directory, path)
         if (located) return located
       }
-      return await writableFile(directory, file)
+      const resolved = await fileFromDirectory(directory, file).catch(() => null)
+      if (resolved) return resolved
+      const cached = listings.get(directory)
+      if (cached) {
+        const found = await handleFromIndex(directory, file, await cached)
+        if (found) return found
+      }
+      return null
     }
     if (await canWrite(file)) return file
     return null

@@ -21,7 +21,7 @@ npm install
 npm run dev
 ```
 
-Open the address Vite prints. Drop audio or a folder on the page, or choose files or folders. A dropped folder can be read at once. Chrome asks once for permission to edit it before tags are written. Chrome asks for one folder at a time; cancel when you are done. Each folder joins the queue immediately, including its subfolders. Analysis runs one file at a time. An MP3 that already has a musical key or Open Key shows that key at once, then analysis fills BPM, energy, brightness, and shape. Brightness and shape are not in the file, so they are calculated here. Rescan tagged analyzes every tagged file in the list again. Rescan on a row does the same for that file. Stop finishes the current file and leaves the drive alone. Resume continues the queue. This page cannot eject a USB drive. When nothing is reading or writing, eject it in Finder. If macOS still says the drive is in use, close the tab. A long list stays folded at 20 rows until you show every row. The status filters stay in view.
+Open the address Vite prints. Drop audio or a folder on the page, or choose files or folders. Several folders can be queued, including their subfolders. A dropped folder is readable immediately. Editing needs one allow: Chrome asks once per folder, not once per file. Choose folders asks for one folder at a time; cancel when you are done. Analysis runs one file at a time. A key already in the file is shown at once. BPM, energy, brightness, and shape are still calculated unless this session already has them. Brightness and shape are never written. Rescan tagged re-queues those files. Rescan on a row does the same for that file. Stop finishes the current file so a USB drive can be ejected in Finder. Resume continues the queue. This page cannot eject a drive. If macOS still says the drive is in use, close the tab. A long list stays folded at 20 rows until you show every row. The status filters stay in view.
 
 ## What a row means
 
@@ -34,7 +34,7 @@ Open the address Vite prints. Drop audio or a folder on the page, or choose file
 | Energy | A 1–10 intensity score for electronic music. A steady club track lands around 7. A sparser groove lands around 4. This is not a loudness meter, so a brickwalled master does not automatically score high. |
 | Brightness | How much of the signal sits above 5 kHz, from 0 to 1. `0.00` is dark. `1.00` is bright. Shown to two decimals. |
 | Shape | How the drive changes through the track. **L** stays level, **B** builds, **D** jumps between a quiet stretch and a peak. Hover a letter for the plain-language description. |
-| Status | Queued, analyzing, ready, saving, saved, or failed. A key already in the file shows while the rest is calculated. Remove drops that row. It does not delete the MP3. |
+| Status | Queued, analyzing, ready, saving, saved, or failed. With auto-save on, an MP3 that still needs folder permission says Waiting to save. A key already in the file shows while the rest is calculated. Remove drops that row. It does not delete the MP3. |
 
 Brightness and shape are there to read. They are not written into the file.
 
@@ -52,7 +52,7 @@ The same file always produces the same energy, brightness, and shape. A key tag 
 
 Energy and Comment are on by default. Key, Open Key, and BPM stay off, so those tags are left alone until you turn them on. Nothing you leave unchecked is deleted.
 
-Auto-save is off until you turn it on. It writes the checked tags into each MP3 as soon as that track is ready. WAV and the other formats stay read-only. Brightness and shape are still not written.
+Auto-save is off until you turn it on. It writes the checked tags into each ready MP3. With auto-save on there is no Ready filter. Files waiting for folder permission say Waiting to save until Allow editing. WAV and the other formats stay read-only. Brightness and shape are still not written.
 
 **Energy** goes into the energy tag DJ software reads: an ID3 `TXXX` frame described as `EnergyLevel`, with a value from `1` to `10`.
 

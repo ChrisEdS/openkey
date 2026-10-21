@@ -4,7 +4,7 @@ import type { Analysis } from "./analysis/types.ts"
 import { mixesWith } from "./analysis/openKey.ts"
 import { audioPickerTypes, collectAudioEntries, isAudioFile, isMp3Name } from "./files/audio.ts"
 import { ALL_COLUMNS, trackListCsv, UNWRITTEN_COLUMNS, type TrackListRow } from "./files/trackList.ts"
-import { canWrite, containingFolder, ensureWrite, grantedWriteHandle, loadLibraries, mergeFolders, pickFolder, rememberFolder, rememberMp3Paths, saveLibraries, type LibraryAccess } from "./files/library.ts"
+import { autoSaveAction, canWrite, containingFolder, ensureWrite, grantedWriteHandle, loadLibraries, mergeFolders, pickFolder, rememberFolder, rememberMp3Paths, saveLibraries, type LibraryAccess } from "./files/library.ts"
 import { queueFolderGroups, waitingIds } from "./files/queue.ts"
 import { formatMixedInKeyComment, isBulkRescanTarget, mergeShown, readStoredKeyFile, shouldSkipAnalysis, writeTags, type StoredKey } from "./id3/writeEnergy.ts"
 import "./App.css"
@@ -50,6 +50,7 @@ export default function App() {
   const [listExpanded, setListExpanded] = useState(false)
   const [autoSave, setAutoSave] = useState(readAutoSave)
   const autoSaveRef = useRef(autoSave)
+  autoSaveRef.current = autoSave
   const selectionRef = useRef<SaveSelection>({ energy: true, key: false, openKey: false, bpm: false, comment: true })
   selectionRef.current = {
     energy: saveEnergy,
@@ -128,17 +129,15 @@ export default function App() {
             }
           }
           if (shouldSkipAnalysis(track.analysis, track.rescan)) {
-            patch(id, {
-              status: track.status === "written" ? "written" : "ready",
-              stored,
-              rescan: false,
-            })
+            const status = track.status === "written" ? "written" : "ready"
+            patch(id, { status, stored, rescan: false })
+            if (status === "ready") queueReadySave(id)
             continue
           }
           const analysis = await analyzeFile(file)
           if (!tracksRef.current.some((item) => item.id === id)) continue
           patch(id, { status: "ready", analysis, stored, rescan: false })
-          if (!stoppedRef.current && autoSaveRef.current && isMp3Name(track.name)) queueAutoSave(id)
+          queueReadySave(id)
         } catch (error) {
           patch(id, { status: "error", error: messageOf(error) })
         }
@@ -146,6 +145,7 @@ export default function App() {
     } finally {
       runningRef.current = false
       if (!stoppedRef.current && queueRef.current.length > 0) void pump()
+      else if (!stoppedRef.current) queueFinishedSaves()
     }
   }
 
@@ -311,6 +311,16 @@ export default function App() {
     const selection = currentSelection()
     const ready = tracksToSave(includeWritten)
     if (ready.length === 0 || !hasSelection(selection)) return
+    const folders: FileSystemDirectoryHandle[] = []
+    for (const track of ready) {
+      if (track.directory && !folders.includes(track.directory)) folders.push(track.directory)
+    }
+    for (const folder of folders) {
+      if (await canWrite(folder)) continue
+      if (await ensureWrite(folder)) continue
+      showNotice(NEEDS_EDIT)
+      return
+    }
     writingRef.current = true
     setWriting(true)
     showNotice("")
@@ -323,6 +333,7 @@ export default function App() {
     } finally {
       writingRef.current = false
       setWriting(false)
+      if (!stoppedRef.current) void drainAutoSave()
     }
   }
 
@@ -340,55 +351,99 @@ export default function App() {
     }
   }
 
-  function queueAutoSave(id: string) {
+  function queueReadySave(id: string) {
+    const track = tracksRef.current.find((item) => item.id === id)
+    if (!track?.analysis || !isMp3Name(track.name)) return
+    if (stoppedRef.current || !autoSaveRef.current) return
     if (!saveQueueRef.current.includes(id)) saveQueueRef.current.push(id)
     void drainAutoSave()
+  }
+
+  function queueFinishedSaves() {
+    if (stoppedRef.current || !autoSaveRef.current) return
+    for (const track of tracksRef.current) {
+      if (track.status !== "ready" || !track.analysis || !isMp3Name(track.name)) continue
+      if (!saveQueueRef.current.includes(track.id)) saveQueueRef.current.push(track.id)
+    }
+    if (saveQueueRef.current.length > 0) void drainAutoSave()
   }
 
   async function drainAutoSave() {
     if (saveLoopRef.current) return
     saveLoopRef.current = true
     try {
-      for (;;) {
-        if (stoppedRef.current) {
-          saveQueueRef.current = []
-          break
-        }
+      while (!stoppedRef.current) {
+        if (writingRef.current) break
         const id = saveQueueRef.current.shift()
         if (!id) break
         const track = tracksRef.current.find((item) => item.id === id)
-        if (!track?.analysis || !isMp3Name(track.name) || !autoSaveRef.current) continue
-        await saveIfWritable(track)
+        if (!track) continue
+        try {
+          const deferred = await saveIfWritable(track)
+          if (deferred) {
+            if (!saveQueueRef.current.includes(id)) saveQueueRef.current.unshift(id)
+            break
+          }
+        } catch (error) {
+          const row = rowWriteMessage(error)
+          patch(id, { status: "ready", error: row })
+          if (!row) showNotice(NEEDS_EDIT)
+        }
       }
+      if (stoppedRef.current) saveQueueRef.current = []
     } finally {
       saveLoopRef.current = false
-      if (!stoppedRef.current && saveQueueRef.current.length > 0) void drainAutoSave()
+      if (!stoppedRef.current && !writingRef.current && saveQueueRef.current.length > 0) void drainAutoSave()
     }
   }
 
-  async function saveIfWritable(track: Track) {
+  /** True when the save was deferred because a manual write is in progress. The id stays queued. */
+  async function saveIfWritable(track: Track): Promise<boolean> {
+    if (writingRef.current) return true
     const selection = selectionRef.current
-    if (!hasSelection(selection) || writingRef.current) return
     const current = tracksRef.current.find((item) => item.id === track.id)
-    if (!current) return
-    const analysis = track.analysis ?? current.analysis
-    if (!analysis) return
-    patch(track.id, { status: "writing", error: undefined })
-    try {
-      const folder = await containingFolder(current.handle, current.directory, foldersRef.current)
-      const withFolder = { ...current, analysis, directory: folder ?? undefined }
-      const allowed = withFolder.directory ? await canWrite(withFolder.directory) : await canWrite(current.handle)
-      if (!allowed) {
-        patch(track.id, { status: "ready", error: undefined })
-        showNotice(NEEDS_EDIT)
-        return
+    if (!current?.analysis && !track.analysis) return false
+    if (!current) return false
+    if (current.status === "written") return false
+    if (current.status === "writing" && savingRef.current.has(current.id)) return false
+    const analysis = current.analysis ?? track.analysis
+    if (!analysis) return false
+    let folder = current.directory ?? null
+    if (!folder) {
+      try {
+        folder = await containingFolder(current.handle, undefined, foldersRef.current)
+      } catch {
+        folder = null
       }
-      if (await writeTrack(withFolder, selection)) clearNeedsEdit()
-    } catch (error) {
-      const row = rowWriteMessage(error)
-      patch(track.id, { status: "ready", error: row })
-      if (!row) showNotice(NEEDS_EDIT)
     }
+    if (writingRef.current) return true
+    let directoryGranted = false
+    let fileGranted = false
+    try {
+      directoryGranted = folder ? await canWrite(folder) : false
+      fileGranted = directoryGranted ? false : await canWrite(current.handle)
+    } catch {
+      directoryGranted = false
+      fileGranted = false
+    }
+    const action = autoSaveAction({
+      enabled: autoSaveRef.current,
+      mp3: isMp3Name(current.name),
+      hasAnalysis: true,
+      selected: hasSelection(selection),
+      stopped: stoppedRef.current,
+      directoryGranted,
+      fileGranted,
+    })
+    if (action === "skip") return false
+    if (action === "wait") {
+      patch(current.id, { status: "ready", error: undefined, directory: folder ?? current.directory })
+      showNotice(NEEDS_EDIT)
+      return false
+    }
+    const saved = await writeTrack({ ...current, analysis, directory: folder ?? current.directory }, selection)
+    if (saved) clearNeedsEdit()
+    return false
   }
 
   async function saveBatch(ready: Track[], selection: SaveSelection) {
@@ -576,6 +631,7 @@ export default function App() {
     stoppedRef.current = false
     setStopped(false)
     void pump()
+    queueFinishedSaves()
   }
 
   function removeFolder(directory: FileSystemDirectoryHandle) {

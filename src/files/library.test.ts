@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { containingFolder, ensureWrite, grantedWriteHandle, matchByName, rememberFolder, rememberMp3Paths, writableFile } from "./library.ts"
+import { autoSaveAction, containingFolder, ensureWrite, grantedWriteHandle, matchByName, rememberFolder, rememberMp3Paths, writableFile } from "./library.ts"
 
 describe("matchByName", () => {
   it("returns the candidate that is the same file", async () => {
@@ -48,6 +48,38 @@ describe("ensureWrite", () => {
   })
 })
 
+describe("autoSaveAction", () => {
+  const ready = {
+    enabled: true,
+    mp3: true,
+    hasAnalysis: true,
+    selected: true,
+    stopped: false,
+    directoryGranted: false,
+    fileGranted: false,
+  }
+
+  it("writes when the folder is granted even if the listed file is only prompt", () => {
+    expect(autoSaveAction({ ...ready, directoryGranted: true, fileGranted: false })).toBe("write")
+  })
+
+  it("writes a file the user already allowed on its own", () => {
+    expect(autoSaveAction({ ...ready, fileGranted: true })).toBe("write")
+  })
+
+  it("waits for one folder grant when nothing is writable yet", () => {
+    expect(autoSaveAction(ready)).toBe("wait")
+  })
+
+  it("skips when auto-save is off, the file is not an mp3, or the queue is stopped", () => {
+    expect(autoSaveAction({ ...ready, enabled: false, directoryGranted: true })).toBe("skip")
+    expect(autoSaveAction({ ...ready, mp3: false, directoryGranted: true })).toBe("skip")
+    expect(autoSaveAction({ ...ready, hasAnalysis: false, directoryGranted: true })).toBe("skip")
+    expect(autoSaveAction({ ...ready, selected: false, directoryGranted: true })).toBe("skip")
+    expect(autoSaveAction({ ...ready, stopped: true, directoryGranted: true })).toBe("skip")
+  })
+})
+
 describe("grantedWriteHandle", () => {
   it("gets a fresh handle from the folder instead of the dropped file", async () => {
     const dropped = permissionFile("song.mp3", "prompt")
@@ -76,6 +108,32 @@ describe("grantedWriteHandle", () => {
     const file = permissionFile("song.mp3", "granted")
     await expect(grantedWriteHandle(undefined, file)).resolves.toBe(file)
     expect(file.requested).toBe(false)
+  })
+
+  it("re-fetches a listed file from a granted folder without walking or prompting", async () => {
+    const listed = permissionFile("song.mp3", "prompt")
+    const fresh = permissionFile("song.mp3", "prompt")
+    let walked = false
+    const directory = {
+      kind: "directory",
+      name: "Edits",
+      requested: false,
+      queryPermission: async () => "granted" as PermissionState,
+      requestPermission: async function (this: { requested: boolean }) {
+        this.requested = true
+        return "granted" as PermissionState
+      },
+      resolve: async () => ["song.mp3"],
+      getFileHandle: async () => fresh,
+      values: () => {
+        walked = true
+        throw new Error("should not walk")
+      },
+    } as unknown as FileSystemDirectoryHandle & { requested: boolean }
+    await expect(grantedWriteHandle(directory, listed)).resolves.toBe(fresh)
+    expect(walked).toBe(false)
+    expect(directory.requested).toBe(false)
+    expect(listed.requested).toBe(false)
   })
 
   it("resolves the file through the folder when that folder can already be written", async () => {
