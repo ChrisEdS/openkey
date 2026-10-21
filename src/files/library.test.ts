@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { matchByName } from "./library.ts"
+import { matchByName, rememberFolder } from "./library.ts"
 
 describe("matchByName", () => {
   it("returns the candidate that is the same file", async () => {
@@ -16,3 +16,23 @@ describe("matchByName", () => {
     await expect(matchByName([], async () => true)).resolves.toBeNull()
   })
 })
+
+describe("rememberFolder", () => {
+  it("keeps a second folder and ignores the same folder chosen again", async () => {
+    const first = folder("Edits")
+    const second = folder("House")
+    const again = folder("Edits")
+    first.isSameEntry = async (other) => other === first || other === again
+    const both = await rememberFolder([first], second)
+    const once = await rememberFolder(both, again)
+    expect(once.map((item) => item.name)).toEqual(["Edits", "House"])
+  })
+})
+
+function folder(name: string): FileSystemDirectoryHandle {
+  return {
+    kind: "directory",
+    name,
+    isSameEntry: async () => false,
+  } as FileSystemDirectoryHandle
+}

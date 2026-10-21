@@ -1,12 +1,10 @@
 main {
   width: min(1120px, calc(100% - 32px));
-  height: 100%;
-  min-height: 0;
+  min-height: 100%;
   margin: 0 auto;
-  padding: 36px 0 20px;
+  padding: 36px 0 48px;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
 }
 
 .topbar {
@@ -44,9 +42,7 @@ main {
 }
 
 .sponsor {
-  flex: none;
-  margin-top: auto;
-  padding: 12px 0 0;
+  margin-top: 36px;
 }
 
 .sponsor h2 {
@@ -162,52 +158,6 @@ h1 {
   line-height: 0.95;
 }
 
-main.has-tracks {
-  padding-top: 16px;
-  padding-bottom: 12px;
-}
-
-main.has-tracks .topbar {
-  margin-bottom: 8px;
-}
-
-main.has-tracks h1,
-main.has-tracks .lede {
-  display: none;
-}
-
-main.has-tracks .writes {
-  margin-top: 12px;
-  padding: 12px 16px;
-  gap: 10px;
-}
-
-main.has-tracks .writes legend {
-  margin-bottom: 8px;
-}
-
-main.has-tracks .energy-detail {
-  flex-direction: row;
-  align-items: center;
-  gap: 16px;
-  margin-left: 0;
-  padding: 0;
-  border-left: 0;
-}
-
-main.has-tracks .drop {
-  margin-top: 10px;
-  padding: 8px 12px;
-}
-
-main.has-tracks .workspace {
-  margin-top: 10px;
-}
-
-main.has-tracks .sponsor {
-  padding-top: 8px;
-}
-
 .lede {
   max-width: 62ch;
   margin: 22px 0 0;
@@ -243,6 +193,45 @@ main.has-tracks .sponsor {
   color: var(--muted);
 }
 
+.folders {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.folders li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  min-height: 36px;
+  padding: 4px 8px 4px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--paper);
+}
+
+.folder-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 560;
+}
+
+.folder-count {
+  flex: none;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.folders button {
+  margin-left: auto;
+}
+
 .writes {
   margin: 32px 0 0;
   padding: 22px 24px 24px;
@@ -274,6 +263,14 @@ main.has-tracks .sponsor {
   flex-wrap: wrap;
   gap: 12px 28px;
   align-items: center;
+}
+
+.auto-save {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+  font-size: 14px;
 }
 
 .energy-detail {
@@ -420,11 +417,7 @@ button:disabled {
 }
 
 .workspace {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  margin-top: 20px;
+  margin-top: 28px;
 }
 
 .toolbar {
@@ -490,10 +483,8 @@ button.tiny {
 }
 
 .table-wrap {
-  flex: 1 1 auto;
-  min-height: 0;
-  margin-top: 12px;
-  overflow: auto;
+  margin-top: 16px;
+  overflow-x: auto;
   border: 1px solid var(--line);
   border-radius: 18px;
   background: var(--paper);
@@ -508,7 +499,7 @@ table {
 }
 
 th, td {
-  padding: 8px 12px;
+  padding: 12px 14px;
   text-align: left;
   border-bottom: 1px solid var(--line);
   vertical-align: middle;

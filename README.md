@@ -21,7 +21,7 @@ npm install
 npm run dev
 ```
 
-Open the address Vite prints. Drop audio on the page, or choose it. Analysis runs one file at a time. The track list scrolls on its own, and the status filters stay in view.
+Open the address Vite prints. Drop audio or a folder on the page, or choose files or folders. Chrome asks for one folder at a time; cancel when you are done. Each folder joins the queue immediately, including its subfolders. Analysis runs one file at a time. The track list scrolls on its own, and the status filters stay in view.
 
 ## What a row means
 
@@ -52,6 +52,8 @@ The same file always produces the same energy, brightness, and shape. A track th
 
 Energy and Comment are on by default. Key, Open Key, and BPM stay off, so those tags are left alone until you turn them on. Nothing you leave unchecked is deleted.
 
+Auto-save is off until you turn it on. It writes the checked tags into each MP3 as soon as that track is ready. WAV and the other formats stay read-only. Brightness and shape are still not written.
+
 **Energy** goes into the energy tag DJ software reads: an ID3 `TXXX` frame described as `EnergyLevel`, with a value from `1` to `10`.
 
 **Comment** is only available while Energy is on. It does not replace the energy tag. It copies the Open Key and the energy into the comment, in the form Mixed In Key uses:
@@ -80,7 +82,7 @@ Turn Comment off and the energy tag is still written. The existing comment stays
 | BPM | `TBPM`, the same number shown in the table |
 | Comment | With Energy on, `8A - Energy 7` in front of the existing comment |
 
-ID3v2.2 files are saved as ID3v2.3, with the older frame names translated and the audio left as it is. A compressed v2.2 tag, or a frame this app cannot carry over, is left unchanged. If a frame that has to change is compressed or encrypted, the file is left unchanged. The first save asks once for the folder that contains the tracks. After that, Chrome can update every MP3 in that folder without asking again for each file.
+ID3v2.2 files are saved as ID3v2.3, with the older frame names translated and the audio left as it is. A compressed v2.2 tag, or a frame this app cannot carry over, is left unchanged. If a frame that has to change is compressed or encrypted, the file is left unchanged. Saving uses the folders you already chose. If a track sits in a folder that was not chosen yet, Chrome asks for that folder, then for the next one, until every MP3 is saved or you cancel. Each folder is remembered.
 
 ## How the numbers are made
 

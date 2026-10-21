@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type DragEvent } from "react"
 import { analyzeFile } from "./analysis/client.ts"
 import type { Analysis } from "./analysis/types.ts"
-import { audioPickerTypes, isAudioFile, isMp3Name } from "./files/audio.ts"
+import { audioPickerTypes, collectAudioFiles, isAudioFile, isMp3Name } from "./files/audio.ts"
 import { ALL_COLUMNS, trackListCsv, UNWRITTEN_COLUMNS, type TrackListRow } from "./files/trackList.ts"
-import { acquireLibrary, canWrite, forgetLibrary, loadLibrary, saveLibrary, writableFile } from "./files/library.ts"
+import { canWrite, loadLibraries, mergeFolders, pickFolder, rememberFolder, saveLibraries, writableFile } from "./files/library.ts"
+import { queueFolderGroups, waitingIds } from "./files/queue.ts"
 import { formatMixedInKeyComment, writeTags } from "./id3/writeEnergy.ts"
 import "./App.css"
 
@@ -15,6 +16,7 @@ type Track = {
   id: string
   name: string
   handle: FileSystemFileHandle
+  directory?: FileSystemDirectoryHandle
   status: TrackStatus
   error?: string
   analysis?: Analysis
@@ -38,17 +40,29 @@ export default function App() {
   const [saveComment, setSaveComment] = useState(true)
   const [filter, setFilter] = useState<StatusFilter>("all")
   const [listView, setListView] = useState<ListView>("unwritten")
+  const [autoSave, setAutoSave] = useState(readAutoSave)
+  const autoSaveRef = useRef(autoSave)
+  const selectionRef = useRef<SaveSelection>({ energy: true, key: false, openKey: false, bpm: false, comment: true })
+  selectionRef.current = {
+    energy: saveEnergy,
+    key: saveKey,
+    openKey: saveOpenKey,
+    bpm: saveBpm,
+    comment: saveEnergy && saveComment,
+  }
   const tracksRef = useRef<Track[]>([])
   const queueRef = useRef<string[]>([])
   const runningRef = useRef(false)
-  const libraryRef = useRef<FileSystemDirectoryHandle | null>(null)
+  const foldersRef = useRef<FileSystemDirectoryHandle[]>([])
   const canPick = typeof window.showOpenFilePicker === "function"
+  const canPickFolder = typeof window.showDirectoryPicker === "function"
 
   useEffect(() => {
     let active = true
-    void loadLibrary()
-      .then((handle) => {
-        if (active && handle && !libraryRef.current) libraryRef.current = handle
+    void loadLibraries()
+      .then(async (folders) => {
+        if (!active) return
+        foldersRef.current = await mergeFolders(foldersRef.current, folders)
       })
       .catch(() => undefined)
     return () => {
@@ -84,7 +98,9 @@ export default function App() {
         try {
           const file = await track.handle.getFile()
           const analysis = await analyzeFile(file)
+          if (!tracksRef.current.some((item) => item.id === id)) continue
           patch(id, { status: "ready", analysis })
+          if (autoSaveRef.current && isMp3Name(track.name)) await saveIfWritable({ ...track, analysis })
         } catch (error) {
           patch(id, { status: "error", error: messageOf(error) })
         }
@@ -109,6 +125,37 @@ export default function App() {
     }
   }
 
+  async function chooseFolders() {
+    const picker = window.showDirectoryPicker
+    if (!picker) {
+      setNotice("Open this page in Chrome or Edge to choose folders.")
+      return
+    }
+    for (;;) {
+      let directory: FileSystemDirectoryHandle
+      try {
+        directory = await picker({ mode: "readwrite", id: "openkey-folders", startIn: "music" })
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return
+        setNotice(messageOf(error))
+        return
+      }
+      try {
+        setNotice(`Reading ${directory.name}…`)
+        await remember(directory)
+        const files = await collectAudioFiles(directory)
+        const accepted = await newTracks(files.map((handle) => ({ handle, directory })))
+        if (accepted.length > 0) enqueue(accepted)
+        if (files.length === 0) setNotice(`${directory.name} has no audio files. Choose another folder, or cancel.`)
+        else if (accepted.length === 0) setNotice(`${directory.name} is already in the list. Choose another folder, or cancel.`)
+        else setNotice(`Added ${accepted.length} from ${directory.name}. Choose another folder, or cancel.`)
+      } catch (error) {
+        setNotice(messageOf(error))
+        return
+      }
+    }
+  }
+
   function onDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault()
     setDragging(false)
@@ -124,30 +171,66 @@ export default function App() {
 
   async function acceptHandles(pendingHandles: Array<Promise<FileSystemHandle | null>>) {
     const skipped: string[] = []
-    const accepted: Track[] = []
+    const emptyFolders: string[] = []
+    const files: Array<{ handle: FileSystemFileHandle; directory?: FileSystemDirectoryHandle }> = []
     for (const pending of pendingHandles) {
       const handle = await pending
-      if (!handle || !isAudioFile(handle)) {
-        if (handle) skipped.push(handle.name)
+      if (!handle) continue
+      if (handle.kind === "directory") {
+        await remember(handle)
+        const found = await collectAudioFiles(handle)
+        if (found.length === 0) emptyFolders.push(handle.name)
+        else files.push(...found.map((file) => ({ handle: file, directory: handle })))
         continue
       }
+      if (!isAudioFile(handle)) {
+        skipped.push(handle.name)
+        continue
+      }
+      files.push({ handle })
+    }
+    const accepted = await newTracks(files)
+    const notes: string[] = []
+    if (emptyFolders.length === 1) notes.push(`${emptyFolders[0]} has no audio files.`)
+    else if (emptyFolders.length > 1) notes.push(`${emptyFolders.length} folders have no audio files.`)
+    if (skipped.length === 1) notes.push(`Skipped ${skipped[0]}. Only audio files can be read.`)
+    else if (skipped.length > 1) notes.push(`Skipped ${skipped.length} items. Only audio files can be read.`)
+    setNotice(notes.join(" "))
+    if (accepted.length > 0) enqueue(accepted)
+  }
+
+  async function newTracks(
+    files: Array<{ handle: FileSystemFileHandle; directory?: FileSystemDirectoryHandle }>,
+  ): Promise<Track[]> {
+    const accepted: Track[] = []
+    for (const file of files) {
+      if (await alreadyListed(file.handle)) continue
       accepted.push({
         id: crypto.randomUUID(),
-        name: handle.name,
-        handle,
+        name: file.handle.name,
+        handle: file.handle,
+        directory: file.directory,
         status: "queued",
       })
     }
-    if (skipped.length > 0) {
-      setNotice(
-        skipped.length === 1
-          ? `Skipped ${skipped[0]}. Only audio files can be read.`
-          : `Skipped ${skipped.length} items. Only audio files can be read.`,
-      )
-    } else {
-      setNotice("")
+    return accepted
+  }
+
+  async function remember(directory: FileSystemDirectoryHandle) {
+    foldersRef.current = await rememberFolder(foldersRef.current, directory)
+    await saveLibraries(foldersRef.current).catch(() => undefined)
+  }
+
+  async function alreadyListed(handle: FileSystemFileHandle): Promise<boolean> {
+    for (const track of tracksRef.current) {
+      if (track.name !== handle.name) continue
+      try {
+        if (await handle.isSameEntry(track.handle)) return true
+      } catch {
+        // A failed identity check still lets a different file with the same name through.
+      }
     }
-    if (accepted.length > 0) enqueue(accepted)
+    return false
   }
 
   async function writeAll() {
@@ -164,64 +247,122 @@ export default function App() {
     if (ready.length === 0 || writing || !hasSelection(selection)) return
     setWriting(true)
     setNotice("")
+    const readyIds = new Set(ready.map((track) => track.id))
+    commit(tracksRef.current.map((track) => (readyIds.has(track.id) ? { ...track, error: undefined } : track)))
     try {
-      let needsFolder = false
+      let remaining: Track[] = []
       for (const track of ready) {
-        if (!(await canWrite(track.handle))) {
-          needsFolder = true
-          break
+        const handle = await locateTrack(track)
+        if (!handle) {
+          remaining.push(track)
+          continue
         }
+        await writeTrack(track, handle, selection)
       }
-      let directory: FileSystemDirectoryHandle | null = null
-      if (needsFolder) {
-        const access = await acquireLibrary(libraryRef.current)
+
+      while (remaining.length > 0) {
+        setNotice(
+          remaining.length === ready.length
+            ? "Choose the folder that contains these files."
+            : `${remaining.length} ${remaining.length === 1 ? "file is" : "files are"} in another folder. Choose that folder, or cancel.`,
+        )
+        const access = await pickFolder()
         if (!access.ok) {
+          for (const track of remaining) patch(track.id, { status: "ready", error: "In another folder" })
           setNotice(
             access.reason === "cancelled"
-              ? "Save was cancelled"
+              ? remaining.length === ready.length
+                ? "Save was cancelled"
+                : `Saved the files from the chosen folders. ${remaining.length} ${remaining.length === 1 ? "is" : "are"} still in another folder.`
               : "Allow the music folder once. Chrome can then save every MP3 in it.",
           )
           return
         }
-        directory = access.directory
-        libraryRef.current = directory
-        await saveLibrary(directory).catch(() => undefined)
-      }
-
-      let missing = 0
-      for (const track of ready) {
-        patch(track.id, { status: "writing", error: undefined })
-        try {
-          let handle = track.handle
-          if (!(await canWrite(handle))) {
-            if (!directory) throw new Error("Allow the music folder once. Chrome can then save every MP3 in it.")
-            const writable = await writableFile(directory, handle)
-            if (!writable) {
-              missing += 1
-              throw new Error("Not in the chosen folder")
-            }
-            handle = writable
-            patch(track.id, { handle })
+        await remember(access.directory)
+        const still: Track[] = []
+        let wrote = 0
+        for (const track of remaining) {
+          const handle = await findInFolder(access.directory, track.handle)
+          if (!handle) {
+            still.push(track)
+            continue
           }
-          const file = await handle.getFile()
-          const bytes = new Uint8Array(await file.arrayBuffer())
-          const tagged = writeTags(bytes, fieldsFor(track.analysis!, selection))
-          const writable = await handle.createWritable()
-          await writable.write(new Blob([bytesOf(tagged)]))
-          await writable.close()
-          patch(track.id, { status: "written" })
-        } catch (error) {
-          patch(track.id, { status: "ready", error: messageOf(error) })
+          if (await writeTrack(track, handle, selection)) wrote += 1
         }
+        if (wrote === 0) {
+          setNotice("None of the remaining files are in that folder. Choose the folder that contains them, or cancel.")
+          continue
+        }
+        remaining = still
       }
-      if (directory && missing === ready.length) {
-        libraryRef.current = null
-        await forgetLibrary().catch(() => undefined)
-        setNotice("None of these files are in that folder. Choose the folder that contains them, then save again.")
-      }
+      setNotice("")
     } finally {
       setWriting(false)
     }
+  }
+
+  function toggleAutoSave(on: boolean) {
+    autoSaveRef.current = on
+    setAutoSave(on)
+    try {
+      localStorage.setItem("openkey-autosave", on ? "1" : "0")
+    } catch {
+      // The choice still applies until the page is closed.
+    }
+    if (on) void writeAll()
+  }
+
+  async function saveIfWritable(track: Track) {
+    const selection = selectionRef.current
+    if (!hasSelection(selection)) return
+    const handle = await locateTrack(track)
+    if (!handle) return
+    await writeTrack(track, handle, selection)
+  }
+
+  async function locateTrack(track: Track): Promise<FileSystemFileHandle | null> {
+    if (await canWrite(track.handle)) return track.handle
+    if (track.directory && (await canWrite(track.directory))) return track.handle
+    for (const folder of foldersRef.current) {
+      const found = await findInFolder(folder, track.handle)
+      if (found) return found
+    }
+    return null
+  }
+
+  async function findInFolder(
+    folder: FileSystemDirectoryHandle,
+    file: FileSystemFileHandle,
+  ): Promise<FileSystemFileHandle | null> {
+    try {
+      return await writableFile(folder, file)
+    } catch {
+      return null
+    }
+  }
+
+  async function writeTrack(track: Track, handle: FileSystemFileHandle, selection: SaveSelection): Promise<boolean> {
+    patch(track.id, { status: "writing", error: undefined, handle })
+    try {
+      const file = await handle.getFile()
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      const tagged = writeTags(bytes, fieldsFor(track.analysis!, selection))
+      const writable = await handle.createWritable()
+      await writable.write(new Blob([bytesOf(tagged)]))
+      await writable.close()
+      patch(track.id, { status: "written", error: undefined })
+      return true
+    } catch (error) {
+      patch(track.id, { status: "ready", error: messageOf(error) })
+      return false
+    }
+  }
+
+  function removeFolder(directory: FileSystemDirectoryHandle) {
+    const dropped = new Set(waitingIds(tracksRef.current, directory))
+    if (dropped.size === 0) return
+    queueRef.current = queueRef.current.filter((id) => !dropped.has(id))
+    commit(tracksRef.current.filter((track) => !dropped.has(track.id)))
   }
 
   function removeTrack(id: string) {
@@ -274,10 +415,11 @@ export default function App() {
   const selectedNames = fieldNames(selection)
   const tally = tallyTracks(tracks)
   const visible = tracks.filter((track) => matchesFilter(track, filter))
+  const folderGroups = queueFolderGroups(tracks)
   const failedCount = tracks.filter((track) => track.status === "error").length
 
   return (
-    <main className={tracks.length > 0 ? "has-tracks" : undefined}>
+    <main>
       <header>
         <div className="topbar">
           <p className="wordmark">
@@ -338,6 +480,15 @@ export default function App() {
             </div>
           </div>
         </div>
+        <label className="auto-save">
+          <input
+            type="checkbox"
+            checked={autoSave}
+            onChange={(event) => toggleAutoSave(event.target.checked)}
+            title="Writes the checked tags into each MP3 as soon as it is ready. Other audio stays read-only."
+          />
+          Auto-save each ready MP3
+        </label>
       </fieldset>
 
       <div
@@ -356,13 +507,39 @@ export default function App() {
         <button type="button" onClick={() => void chooseFiles()} disabled={!canPick || writing}>
           Choose audio
         </button>
-        <p>{canPick ? "or drop them here" : "Open this page in Chrome or Edge to choose files"}</p>
+        <button type="button" className="quiet" onClick={() => void chooseFolders()} disabled={!canPickFolder || writing}>
+          Choose folders
+        </button>
+        <p>{canPick || canPickFolder ? "or drop files and folders here" : "Open this page in Chrome or Edge to choose files"}</p>
       </div>
 
       {notice ? (
         <p className="notice" role="status">
           {notice}
         </p>
+      ) : null}
+
+      {folderGroups.length > 0 ? (
+        <ul className="folders" aria-label="Folders in the queue">
+          {folderGroups.map((group) => {
+            const waiting = waitingIds(group.tracks, group.directory).length
+            const done = group.tracks.length - waiting
+            return (
+              <li key={group.tracks[0]?.id ?? group.directory.name}>
+                <span className="folder-name" title={group.directory.name}>{group.directory.name}</span>
+                <span className="folder-count">{folderQueueLabel(waiting, done)}</span>
+                <button
+                  type="button"
+                  className="quiet tiny"
+                  disabled={waiting === 0 || writing}
+                  onClick={() => removeFolder(group.directory)}
+                >
+                  Remove
+                </button>
+              </li>
+            )
+          })}
+        </ul>
       ) : null}
 
       {tracks.length > 0 ? (
@@ -687,6 +864,20 @@ function listRow(track: Track): TrackListRow {
     shape: analysis?.shape ?? "",
     mixesWith: analysis ? analysis.mixesWith.join(" ") : "",
     status: track.error ?? statusLabel(track.status),
+  }
+}
+
+function folderQueueLabel(waiting: number, done: number): string {
+  if (waiting === 0) return `${done} done`
+  if (done === 0) return `${waiting} waiting`
+  return `${waiting} waiting · ${done} done`
+}
+
+function readAutoSave(): boolean {
+  try {
+    return localStorage.getItem("openkey-autosave") === "1"
+  } catch {
+    return false
   }
 }
 

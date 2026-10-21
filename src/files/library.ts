@@ -1,6 +1,7 @@
 const DB_NAME = "openkey"
 const STORE = "handles"
 const LIBRARY_KEY = "library"
+const LIBRARIES_KEY = "libraries"
 
 export type LibraryAccess =
   | { ok: true; directory: FileSystemDirectoryHandle }
@@ -14,8 +15,15 @@ export async function canWrite(handle: FileSystemHandle): Promise<boolean> {
 }
 
 export async function loadLibrary(): Promise<FileSystemDirectoryHandle | null> {
+  const folders = await loadLibraries()
+  return folders[0] ?? null
+}
+
+export async function loadLibraries(): Promise<FileSystemDirectoryHandle[]> {
   const db = await openDb()
-  return readHandle(db)
+  const stored = await readHandles(db)
+  const legacy = await readHandle(db)
+  return mergeFolders(stored, legacy ? [legacy] : [])
 }
 
 export async function saveLibrary(directory: FileSystemDirectoryHandle): Promise<void> {
@@ -23,9 +31,50 @@ export async function saveLibrary(directory: FileSystemDirectoryHandle): Promise
   await writeHandle(db, directory)
 }
 
+export async function saveLibraries(directories: FileSystemDirectoryHandle[]): Promise<void> {
+  const db = await openDb()
+  await writeHandles(db, directories)
+}
+
 export async function forgetLibrary(): Promise<void> {
   const db = await openDb()
   await deleteHandle(db)
+}
+
+export async function rememberFolder(
+  folders: FileSystemDirectoryHandle[],
+  folder: FileSystemDirectoryHandle,
+): Promise<FileSystemDirectoryHandle[]> {
+  for (const existing of folders) {
+    try {
+      if (await existing.isSameEntry(folder)) return folders
+    } catch {
+      // A failed identity check is not a reason to drop a folder the site can still use.
+    }
+  }
+  return [...folders, folder]
+}
+
+export async function mergeFolders(
+  current: FileSystemDirectoryHandle[],
+  extra: FileSystemDirectoryHandle[],
+): Promise<FileSystemDirectoryHandle[]> {
+  let next = current
+  for (const folder of extra) next = await rememberFolder(next, folder)
+  return next
+}
+
+/** Asks for one folder. Call it again for a track that lives somewhere else. */
+export async function pickFolder(): Promise<LibraryAccess> {
+  const picker = window.showDirectoryPicker
+  if (!picker) return { ok: false, reason: "denied" }
+  try {
+    const directory = await picker({ mode: "readwrite", id: "openkey-folders", startIn: "music" })
+    return { ok: true, directory }
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") return { ok: false, reason: "cancelled" }
+    throw error
+  }
 }
 
 export async function acquireLibrary(saved: FileSystemDirectoryHandle | null): Promise<LibraryAccess> {
@@ -128,6 +177,26 @@ function openDb(): Promise<IDBDatabase> {
     }
     request.onsuccess = () => resolve(request.result)
     request.onerror = () => reject(request.error)
+  })
+}
+
+function readHandles(db: IDBDatabase): Promise<FileSystemDirectoryHandle[]> {
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(STORE, "readonly").objectStore(STORE).get(LIBRARIES_KEY)
+    request.onsuccess = () => {
+      const stored = request.result as FileSystemDirectoryHandle[] | undefined
+      resolve(Array.isArray(stored) ? stored : [])
+    }
+    request.onerror = () => reject(request.error)
+  })
+}
+
+function writeHandles(db: IDBDatabase, directories: FileSystemDirectoryHandle[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite")
+    tx.objectStore(STORE).put(directories, LIBRARIES_KEY)
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
   })
 }
 
