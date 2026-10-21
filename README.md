@@ -21,7 +21,7 @@ npm install
 npm run dev
 ```
 
-Open the address Vite prints. Drop audio or a folder on the page, or choose files or folders. A dropped folder can be read at once. Chrome asks once for permission to edit it before tags are written. Chrome asks for one folder at a time; cancel when you are done. Each folder joins the queue immediately, including its subfolders. Analysis runs one file at a time. Stop finishes the current file and leaves the drive alone. Resume continues the queue. This page cannot eject a USB drive. When nothing is reading or writing, eject it in Finder. If macOS still says the drive is in use, close the tab. A long list stays folded at 20 rows until you show every row. The status filters stay in view.
+Open the address Vite prints. Drop audio or a folder on the page, or choose files or folders. A dropped folder can be read at once. Chrome asks once for permission to edit it before tags are written. Chrome asks for one folder at a time; cancel when you are done. Each folder joins the queue immediately, including its subfolders. Analysis runs one file at a time. An MP3 that already has a musical key or Open Key shows that key at once, then analysis fills BPM, energy, brightness, and shape. Brightness and shape are not in the file, so they are calculated here. Rescan tagged analyzes every tagged file in the list again. Rescan on a row does the same for that file. Stop finishes the current file and leaves the drive alone. Resume continues the queue. This page cannot eject a USB drive. When nothing is reading or writing, eject it in Finder. If macOS still says the drive is in use, close the tab. A long list stays folded at 20 rows until you show every row. The status filters stay in view.
 
 ## What a row means
 
@@ -34,7 +34,7 @@ Open the address Vite prints. Drop audio or a folder on the page, or choose file
 | Energy | A 1–10 intensity score for electronic music. A steady club track lands around 7. A sparser groove lands around 4. This is not a loudness meter, so a brickwalled master does not automatically score high. |
 | Brightness | How much of the signal sits above 5 kHz, from 0 to 1. `0.00` is dark. `1.00` is bright. Shown to two decimals. |
 | Shape | How the drive changes through the track. **L** stays level, **B** builds, **D** jumps between a quiet stretch and a peak. Hover a letter for the plain-language description. |
-| Status | Queued, analyzing, ready, saving, saved, or failed. Remove drops that row. It does not delete the MP3. |
+| Status | Queued, analyzing, ready, saving, saved, or failed. A key already in the file shows while the rest is calculated. Remove drops that row. It does not delete the MP3. |
 
 Brightness and shape are there to read. They are not written into the file.
 
@@ -46,7 +46,7 @@ Brightness is the top end. Tracks within about 0.15 of each other blend with les
 
 Shape is the mix point. **L** can be mixed almost anywhere. **B** is already rising, so bring the next track in before that rise. **D** has a quiet stretch and a peak; the quiet part is the mix point. A simple run is L, then B, then D. After a D peak, an L track resets the section.
 
-The same file always produces the same energy, brightness, and shape. A track that was tagged earlier keeps the old tags until you analyze it again and write.
+The same file always produces the same energy, brightness, and shape. A key tag stays on screen while the missing columns are calculated. Tags stay as they are until you write them.
 
 ## What gets saved
 

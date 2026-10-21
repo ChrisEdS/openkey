@@ -1,5 +1,5 @@
 main {
-  width: min(1120px, calc(100% - 32px));
+  width: min(1640px, calc(100% - 40px));
   min-height: 100%;
   margin: 0 auto;
   padding: 36px 0 96px;
@@ -18,13 +18,15 @@ main {
 .wordmark {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-shrink: 0;
+  gap: 12px;
   margin: 0;
   color: var(--amber);
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: 22px;
   letter-spacing: 0.16em;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .donate {
@@ -68,7 +70,7 @@ main {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  width: min(1120px, 100%);
+  width: min(1640px, 100%);
   min-height: 48px;
   padding: 6px 16px 6px 8px;
   border: 1px solid var(--line);
@@ -165,8 +167,8 @@ main {
 }
 
 .mark {
-  width: 18px;
-  height: 18px;
+  width: 30px;
+  height: 30px;
   filter: drop-shadow(0 0 8px rgb(228 162 58 / 55%));
 }
 
@@ -436,6 +438,14 @@ button:disabled {
   color: var(--bad);
 }
 
+.notice.calm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+}
+
 .workspace {
   margin-top: 28px;
 }
@@ -533,8 +543,13 @@ button.quiet[aria-pressed="true"] {
 }
 
 button.tiny {
+  width: 72px;
   padding: 4px 8px;
   font-size: 12px;
+}
+
+button.tiny.reserve {
+  visibility: hidden;
 }
 
 .list-fold {
@@ -557,14 +572,29 @@ table {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
-  min-width: 1040px;
+  min-width: 1560px;
+  table-layout: fixed;
 }
 
+.col-file { width: 300px; }
+.col-key { width: 200px; }
+.col-open { width: 116px; }
+.col-bpm { width: 80px; }
+.col-energy { width: 160px; }
+.col-brightness { width: 128px; }
+.col-shape { width: 76px; }
+.col-mixes { width: 160px; }
+.col-status { width: 340px; }
+
 th, td {
-  padding: 12px 14px;
+  height: 56px;
+  padding: 10px 14px;
   text-align: left;
   border-bottom: 1px solid var(--line);
   vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 th {
@@ -586,7 +616,7 @@ th.file {
   position: sticky;
   left: 0;
   z-index: 2;
-  max-width: 280px;
+  width: 300px;
   background: var(--paper);
 }
 
@@ -606,7 +636,9 @@ th.status {
   position: sticky;
   right: 0;
   z-index: 2;
-  min-width: 168px;
+  width: 340px;
+  min-width: 340px;
+  max-width: 340px;
   background: var(--paper);
   box-shadow: -10px 0 14px rgb(20 18 14 / 35%);
 }
@@ -616,16 +648,27 @@ th.status {
   background: #26221c;
 }
 
+td.status,
+th.status {
+  overflow: visible;
+}
+
 .code {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
 }
 
+.key-line {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  max-width: 100%;
+}
+
 .flag {
-  display: block;
-  margin-top: 4px;
   color: var(--amber);
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .energy {
@@ -686,7 +729,7 @@ th.status {
 
 .mixes {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
 }
 
@@ -716,17 +759,30 @@ tbody tr:hover td.status {
 .status-cell {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
+  min-height: 32px;
 }
 
-.status-cell span {
+.status-label {
+  flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-actions {
+  display: grid;
+  grid-template-columns: 72px 72px;
+  flex: none;
+  gap: 6px;
 }
 
 .empty {
+  height: auto;
   padding: 28px 14px;
   color: var(--muted);
+  white-space: normal;
 }
 
 @media (max-width: 640px) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { collectAudioFiles, isAudioFile, isAudioName, isMp3Name } from "./audio.ts"
+import { collectAudioEntries, collectAudioFiles, isAudioFile, isAudioName, isMp3Name } from "./audio.ts"
 
 describe("audio file names", () => {
   it("accepts the formats the browser can decode", () => {
@@ -27,6 +27,8 @@ describe("collectAudioFiles", () => {
     const root = folder("music", [file("track.mp3"), file("notes.txt"), nested, lockedFolder()])
     const names = (await collectAudioFiles(root)).map((handle) => handle.name)
     expect(names).toEqual(["track.mp3", "set.wav"])
+    const entries = await collectAudioEntries(root)
+    expect(entries.map((entry) => entry.path)).toEqual([["track.mp3"], ["live", "set.wav"]])
   })
 })
 
@@ -52,5 +54,5 @@ function lockedFolder(): FileSystemDirectoryHandle {
       yield* []
       throw new Error("denied")
     },
-  } as FileSystemDirectoryHandle
+  } as unknown as FileSystemDirectoryHandle
 }

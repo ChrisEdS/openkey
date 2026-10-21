@@ -7,17 +7,28 @@ export type LibraryAccess =
   | { ok: true; directory: FileSystemDirectoryHandle }
   | { ok: false; reason: "cancelled" | "denied" }
 
-const listings = new WeakMap<FileSystemDirectoryHandle, Promise<Map<string, FileSystemFileHandle[]>>>()
+const listings = new WeakMap<FileSystemDirectoryHandle, Promise<Map<string, string[][]>>>()
 
 export async function canWrite(handle: FileSystemHandle): Promise<boolean> {
   if (!handle.queryPermission) return false
   return (await handle.queryPermission({ mode: "readwrite" })) === "granted"
 }
 
+/** True when the site can already look inside this folder. Does not prompt. */
+export async function canRead(handle: FileSystemHandle): Promise<boolean> {
+  if (!handle.queryPermission) return false
+  try {
+    if ((await handle.queryPermission({ mode: "read" })) === "granted") return true
+    return (await handle.queryPermission({ mode: "readwrite" })) === "granted"
+  } catch {
+    return false
+  }
+}
+
 /** Restores write access on a folder the site already knows. One prompt names that folder. */
 export async function ensureWrite(handle: FileSystemHandle): Promise<boolean> {
   if (!handle.queryPermission) return false
-  const options: FileSystemHandlePermissionDescriptor = { mode: "readwrite" }
+  const options = { mode: "readwrite" } as const
   try {
     const state = await handle.queryPermission(options)
     if (state === "granted") return true
@@ -120,14 +131,120 @@ export async function acquireLibrary(saved: FileSystemDirectoryHandle | null): P
   }
 }
 
+/**
+ * A file handle obtained from a folder that already has readwrite permission.
+ * Dropped file handles are not returned: createWritable on those opens a save dialog per file.
+ */
+export async function grantedWriteHandle(
+  directory: FileSystemDirectoryHandle | undefined,
+  file: FileSystemFileHandle,
+  path?: readonly string[],
+): Promise<FileSystemFileHandle | null> {
+  try {
+    if (directory) {
+      if (!(await canWrite(directory))) return null
+      if (path && path.length > 0) {
+        const located = await fileAtPath(directory, path)
+        if (located) return located
+      }
+      return await writableFile(directory, file)
+    }
+    if (await canWrite(file)) return file
+    return null
+  } catch {
+    return null
+  }
+}
+
+/** The folder this file was taken from, or a remembered folder the site can already read. Does not prompt. */
+export async function containingFolder(
+  file: FileSystemFileHandle,
+  directory: FileSystemDirectoryHandle | undefined,
+  remembered: readonly FileSystemDirectoryHandle[],
+): Promise<FileSystemDirectoryHandle | null> {
+  if (directory) return directory
+  for (const folder of remembered) {
+    try {
+      if (!(await canRead(folder))) continue
+      const found = await writableFile(folder, file)
+      if (found) return folder
+    } catch {
+      // A folder the site cannot search is not a reason to ask for every library.
+    }
+  }
+  return null
+}
+
+export async function fileAtPath(
+  directory: FileSystemDirectoryHandle,
+  path: readonly string[],
+): Promise<FileSystemFileHandle | null> {
+  if (path.length === 0) return null
+  try {
+    let current = directory
+    for (let index = 0; index < path.length - 1; index++) {
+      const name = path[index]
+      if (!name) return null
+      current = await current.getDirectoryHandle(name)
+    }
+    const name = path[path.length - 1]
+    if (!name) return null
+    return await current.getFileHandle(name)
+  } catch {
+    return null
+  }
+}
+
+/** Remember MP3 paths from a folder walk that already happened, so later saves do not walk it again. */
+export function rememberMp3Paths(
+  directory: FileSystemDirectoryHandle,
+  files: ReadonlyArray<{ path: readonly string[]; name?: string; handle?: { name: string } }>,
+): void {
+  if (listings.has(directory)) return
+  const index = new Map<string, string[][]>()
+  for (const file of files) {
+    const name = file.name ?? file.handle?.name ?? ""
+    if (!name.toLowerCase().endsWith(".mp3")) continue
+    const key = name.toLowerCase()
+    const path = [...file.path]
+    const list = index.get(key)
+    if (list) list.push(path)
+    else index.set(key, [path])
+  }
+  listings.set(directory, Promise.resolve(index))
+}
+
 export async function writableFile(
   directory: FileSystemDirectoryHandle,
   file: FileSystemFileHandle,
 ): Promise<FileSystemFileHandle | null> {
+  const cached = listings.get(directory)
+  if (cached) {
+    const found = await handleFromIndex(directory, file, await cached)
+    if (found) return found
+  }
   const resolved = await fileFromDirectory(directory, file).catch(() => null)
   if (resolved) return resolved
   const index = await mp3Index(directory)
-  return matchByName(index.get(file.name.toLowerCase()) ?? [], (candidate) => file.isSameEntry(candidate))
+  return handleFromIndex(directory, file, index)
+}
+
+async function handleFromIndex(
+  directory: FileSystemDirectoryHandle,
+  file: FileSystemFileHandle,
+  index: Map<string, string[][]>,
+): Promise<FileSystemFileHandle | null> {
+  const paths = index.get(file.name.toLowerCase()) ?? []
+  for (const path of paths) {
+    const handle = await fileAtPath(directory, path)
+    if (!handle) continue
+    try {
+      if (await file.isSameEntry(handle)) return handle
+    } catch {
+      // A failed identity check is not a reason to overwrite a different file.
+    }
+  }
+  return null
 }
 
 export async function matchByName<T>(
@@ -159,7 +276,7 @@ async function fileFromDirectory(
   return current.getFileHandle(name)
 }
 
-function mp3Index(directory: FileSystemDirectoryHandle): Promise<Map<string, FileSystemFileHandle[]>> {
+function mp3Index(directory: FileSystemDirectoryHandle): Promise<Map<string, string[][]>> {
   const cached = listings.get(directory)
   if (cached) return cached
   const pending = indexMp3s(directory)
@@ -167,24 +284,25 @@ function mp3Index(directory: FileSystemDirectoryHandle): Promise<Map<string, Fil
   return pending
 }
 
-async function indexMp3s(directory: FileSystemDirectoryHandle): Promise<Map<string, FileSystemFileHandle[]>> {
-  const index = new Map<string, FileSystemFileHandle[]>()
-  await walk(directory)
+async function indexMp3s(directory: FileSystemDirectoryHandle): Promise<Map<string, string[][]>> {
+  const index = new Map<string, string[][]>()
+  await walk(directory, [])
   return index
 
-  async function walk(dir: FileSystemDirectoryHandle): Promise<void> {
+  async function walk(dir: FileSystemDirectoryHandle, prefix: string[]): Promise<void> {
     for await (const handle of dir.values()) {
       if (handle.kind === "directory") {
         try {
-          await walk(handle)
+          await walk(handle, [...prefix, handle.name])
         } catch {
           // Skip a folder the site cannot list.
         }
       } else if (handle.kind === "file" && handle.name.toLowerCase().endsWith(".mp3")) {
         const key = handle.name.toLowerCase()
+        const path = [...prefix, handle.name]
         const list = index.get(key)
-        if (list) list.push(handle)
-        else index.set(key, [handle])
+        if (list) list.push(path)
+        else index.set(key, [path])
       }
     }
   }

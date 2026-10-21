@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState, type DragEvent } from "react"
 import { analyzeFile } from "./analysis/client.ts"
 import type { Analysis } from "./analysis/types.ts"
-import { audioPickerTypes, collectAudioFiles, isAudioFile, isMp3Name } from "./files/audio.ts"
+import { mixesWith } from "./analysis/openKey.ts"
+import { audioPickerTypes, collectAudioEntries, isAudioFile, isMp3Name } from "./files/audio.ts"
 import { ALL_COLUMNS, trackListCsv, UNWRITTEN_COLUMNS, type TrackListRow } from "./files/trackList.ts"
-import { canWrite, ensureWrite, loadLibraries, mergeFolders, pickFolder, rememberFolder, saveLibraries, writableFile } from "./files/library.ts"
+import { canWrite, containingFolder, ensureWrite, grantedWriteHandle, loadLibraries, mergeFolders, pickFolder, rememberFolder, rememberMp3Paths, saveLibraries, type LibraryAccess } from "./files/library.ts"
 import { queueFolderGroups, waitingIds } from "./files/queue.ts"
-import { formatMixedInKeyComment, writeTags } from "./id3/writeEnergy.ts"
+import { formatMixedInKeyComment, isBulkRescanTarget, mergeShown, readStoredKeyFile, shouldSkipAnalysis, writeTags, type StoredKey } from "./id3/writeEnergy.ts"
 import "./App.css"
 
-type TrackStatus = "queued" | "analyzing" | "ready" | "writing" | "written" | "error"
+type TrackStatus = "queued" | "analyzing" | "ready" | "writing" | "written" | "error" | "skipped"
 type StatusFilter = "all" | "working" | "ready" | "saved" | "failed"
 type ListView = "unwritten" | "visible" | "all"
 
@@ -17,12 +18,16 @@ type Track = {
   name: string
   handle: FileSystemFileHandle
   directory?: FileSystemDirectoryHandle
+  path?: string[]
   status: TrackStatus
   error?: string
   analysis?: Analysis
+  stored?: StoredKey
+  rescan?: boolean
 }
 
 const LIST_PREVIEW = 20
+const NEEDS_EDIT = "Allow editing in the music folder once. openkey will then save every MP3 in it."
 
 const pickerOptions = {
   multiple: true,
@@ -59,6 +64,11 @@ export default function App() {
   const stoppedRef = useRef(false)
   const [stopped, setStopped] = useState(false)
   const foldersRef = useRef<FileSystemDirectoryHandle[]>([])
+  const noticeRef = useRef("")
+  const writingRef = useRef(false)
+  const savingRef = useRef(new Set<string>())
+  const saveQueueRef = useRef<string[]>([])
+  const saveLoopRef = useRef(false)
   const canPick = typeof window.showOpenFilePicker === "function"
   const canPickFolder = typeof window.showDirectoryPicker === "function"
 
@@ -84,6 +94,12 @@ export default function App() {
     commit(tracksRef.current.map((track) => (track.id === id ? { ...track, ...partial } : track)))
   }
 
+  function showNotice(text: string) {
+    if (noticeRef.current === text) return
+    noticeRef.current = text
+    setNotice(text)
+  }
+
   function enqueue(incoming: Track[]) {
     commit([...tracksRef.current, ...incoming])
     queueRef.current.push(...incoming.map((track) => track.id))
@@ -103,10 +119,26 @@ export default function App() {
         patch(id, { status: "analyzing", error: undefined })
         try {
           const file = await track.handle.getFile()
+          let stored = track.stored
+          if (isMp3Name(track.name)) {
+            const read = await readStoredKeyFile(file).catch(() => null)
+            if (read) {
+              stored = read
+              patch(id, { stored: read })
+            }
+          }
+          if (shouldSkipAnalysis(track.analysis, track.rescan)) {
+            patch(id, {
+              status: track.status === "written" ? "written" : "ready",
+              stored,
+              rescan: false,
+            })
+            continue
+          }
           const analysis = await analyzeFile(file)
           if (!tracksRef.current.some((item) => item.id === id)) continue
-          patch(id, { status: "ready", analysis })
-          if (!stoppedRef.current && autoSaveRef.current && isMp3Name(track.name)) await saveIfWritable({ ...track, analysis })
+          patch(id, { status: "ready", analysis, stored, rescan: false })
+          if (!stoppedRef.current && autoSaveRef.current && isMp3Name(track.name)) queueAutoSave(id)
         } catch (error) {
           patch(id, { status: "error", error: messageOf(error) })
         }
@@ -119,7 +151,7 @@ export default function App() {
 
   async function chooseFiles() {
     if (!window.showOpenFilePicker) {
-      setNotice("Open this page in Chrome or Edge to write tags back into the original MP3.")
+      showNotice("Open this page in Chrome or Edge to write tags back into the original MP3.")
       return
     }
     try {
@@ -127,14 +159,14 @@ export default function App() {
       await acceptHandles(handles.map((handle) => Promise.resolve(handle)))
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return
-      setNotice(messageOf(error))
+      showNotice(messageOf(error))
     }
   }
 
   async function chooseFolders() {
     const picker = window.showDirectoryPicker
     if (!picker) {
-      setNotice("Open this page in Chrome or Edge to choose folders.")
+      showNotice("Open this page in Chrome or Edge to choose folders.")
       return
     }
     for (;;) {
@@ -143,20 +175,21 @@ export default function App() {
         directory = await picker({ mode: "readwrite", id: "openkey-folders", startIn: "music" })
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return
-        setNotice(messageOf(error))
+        showNotice(messageOf(error))
         return
       }
       try {
-        setNotice(`Reading ${directory.name}…`)
+        showNotice(`Reading ${directory.name}…`)
         await remember(directory)
-        const files = await collectAudioFiles(directory)
-        const accepted = await newTracks(files.map((handle) => ({ handle, directory })))
+        const entries = await collectAudioEntries(directory)
+        rememberMp3Paths(directory, entries)
+        const accepted = await newTracks(entries.map((entry) => ({ handle: entry.handle, directory, path: entry.path })))
         if (accepted.length > 0) enqueue(accepted)
-        if (files.length === 0) setNotice(`${directory.name} has no audio files. Choose another folder, or cancel.`)
-        else if (accepted.length === 0) setNotice(`${directory.name} is already in the list. Choose another folder, or cancel.`)
-        else setNotice(`Added ${accepted.length} from ${directory.name}. Choose another folder, or cancel.`)
+        if (entries.length === 0) showNotice(`${directory.name} has no audio files. Choose another folder, or cancel.`)
+        else if (accepted.length === 0) showNotice(`${directory.name} is already in the list. Choose another folder, or cancel.`)
+        else showNotice(`Added ${accepted.length} from ${directory.name}. Choose another folder, or cancel.`)
       } catch (error) {
-        setNotice(messageOf(error))
+        showNotice(messageOf(error))
         return
       }
     }
@@ -168,7 +201,7 @@ export default function App() {
     const items = [...event.dataTransfer.items].filter((item) => item.kind === "file")
     if (items.length === 0) return
     if (items.some((item) => !item.getAsFileSystemHandle)) {
-      setNotice("This browser cannot save into dropped files. Choose audio in Chrome or Edge.")
+      showNotice("This browser cannot save into dropped files. Choose audio in Chrome or Edge.")
       return
     }
     const handles = items.map((item) => item.getAsFileSystemHandle!())
@@ -179,16 +212,17 @@ export default function App() {
     const skipped: string[] = []
     const emptyFolders: string[] = []
     const needsEdit: string[] = []
-    const files: Array<{ handle: FileSystemFileHandle; directory?: FileSystemDirectoryHandle }> = []
+    const files: Array<{ handle: FileSystemFileHandle; directory?: FileSystemDirectoryHandle; path?: string[] }> = []
     for (const pending of pendingHandles) {
       const handle = await pending
       if (!handle) continue
-      if (handle.kind === "directory") {
+      if (isDirectoryHandle(handle)) {
         const canEdit = await ensureWrite(handle)
         await remember(handle)
-        const found = await collectAudioFiles(handle)
+        const found = await collectAudioEntries(handle)
+        rememberMp3Paths(handle, found)
         if (found.length === 0) emptyFolders.push(handle.name)
-        else files.push(...found.map((file) => ({ handle: file, directory: handle })))
+        else files.push(...found.map((entry) => ({ handle: entry.handle, directory: handle, path: entry.path })))
         if (!canEdit && found.length > 0) needsEdit.push(handle.name)
         continue
       }
@@ -206,12 +240,12 @@ export default function App() {
     else if (skipped.length > 1) notes.push(`Skipped ${skipped.length} items. Only audio files can be read.`)
     if (needsEdit.length === 1) notes.push(`Allow editing in ${needsEdit[0]} when you save tags.`)
     else if (needsEdit.length > 1) notes.push("Allow editing in the dropped folders when you save tags.")
-    setNotice(notes.join(" "))
+    showNotice(notes.join(" "))
     if (accepted.length > 0) enqueue(accepted)
   }
 
   async function newTracks(
-    files: Array<{ handle: FileSystemFileHandle; directory?: FileSystemDirectoryHandle }>,
+    files: Array<{ handle: FileSystemFileHandle; directory?: FileSystemDirectoryHandle; path?: string[] }>,
   ): Promise<Track[]> {
     const accepted: Track[] = []
     for (const file of files) {
@@ -221,6 +255,7 @@ export default function App() {
         name: file.handle.name,
         handle: file.handle,
         directory: file.directory,
+        path: file.path,
         status: "queued",
       })
     }
@@ -244,81 +279,49 @@ export default function App() {
     return false
   }
 
-  async function writeAll() {
-    const selection = {
+  function currentSelection(): SaveSelection {
+    return {
       energy: saveEnergy,
       key: saveKey,
       openKey: saveOpenKey,
       bpm: saveBpm,
       comment: saveEnergy && saveComment,
     }
-    const ready = tracksRef.current.filter(
-      (track) => (track.status === "ready" || track.status === "written") && track.analysis && isMp3Name(track.name),
+  }
+
+  function tracksToSave(includeWritten: boolean): Track[] {
+    return tracksRef.current.filter(
+      (track) =>
+        Boolean(track.analysis) &&
+        isMp3Name(track.name) &&
+        (track.status === "ready" || (includeWritten && track.status === "written")),
     )
-    if (ready.length === 0 || writing || !hasSelection(selection)) return
+  }
+
+  async function writeAll() {
+    await saveListed(true)
+  }
+
+  async function allowEditing() {
+    await saveListed(false)
+  }
+
+  async function saveListed(includeWritten: boolean) {
+    if (writingRef.current) return
+    const selection = currentSelection()
+    const ready = tracksToSave(includeWritten)
+    if (ready.length === 0 || !hasSelection(selection)) return
+    writingRef.current = true
     setWriting(true)
-    setNotice("")
+    showNotice("")
     const readyIds = new Set(ready.map((track) => track.id))
     commit(tracksRef.current.map((track) => (readyIds.has(track.id) ? { ...track, error: undefined } : track)))
     try {
-      const asked = new Set<FileSystemDirectoryHandle>()
-      await allowTrackFolders(ready, asked)
-      let remaining: Track[] = []
-      for (const track of ready) {
-        if (stoppedRef.current) break
-        const located = await locateTrack(track)
-        if (!located) {
-          remaining.push(track)
-          continue
-        }
-        await writeTrack({ ...track, directory: located.directory ?? track.directory }, located.handle, selection)
-      }
-
-      while (remaining.length > 0) {
-        if (stoppedRef.current) break
-        setNotice(
-          foldersRef.current.length > 0
-            ? "These files are not in the folders already added. Choose the folder that contains them, or cancel."
-            : remaining.length === ready.length
-              ? "Choose the folder that contains these files."
-              : `${remaining.length} ${remaining.length === 1 ? "file is" : "files are"} in another folder. Choose that folder, or cancel.`,
-        )
-        const access = await pickFolder()
-        if (!access.ok) {
-          for (const track of remaining) patch(track.id, { status: "ready", error: "In another folder" })
-          setNotice(
-            access.reason === "cancelled"
-              ? remaining.length === ready.length
-                ? "Save was cancelled"
-                : `Saved the files from the chosen folders. ${remaining.length} ${remaining.length === 1 ? "is" : "are"} still in another folder.`
-              : "Allow the music folder once. Chrome can then save every MP3 in it.",
-          )
-          return
-        }
-        await remember(access.directory)
-        const still: Track[] = []
-        let wrote = 0
-        for (const track of remaining) {
-          if (stoppedRef.current) {
-            still.push(track)
-            continue
-          }
-          const handle = await findInFolder(access.directory, track.handle)
-          if (!handle) {
-            still.push(track)
-            continue
-          }
-          if (await writeTrack({ ...track, directory: access.directory }, handle, selection)) wrote += 1
-        }
-        if (stoppedRef.current) break
-        if (wrote === 0) {
-          setNotice("None of the remaining files are in that folder.")
-          break
-        }
-        remaining = still
-      }
-      if (!stoppedRef.current) setNotice("")
+      await saveBatch(tracksToSave(includeWritten), selection)
+      if (!stoppedRef.current) await writeAlreadyAllowed(selection)
+      clearNeedsEdit()
     } finally {
+      writingRef.current = false
       setWriting(false)
     }
   }
@@ -331,83 +334,237 @@ export default function App() {
     } catch {
       // The choice still applies until the page is closed.
     }
-    if (on) void writeAll()
-  }
-
-  async function allowFolder(folder: FileSystemDirectoryHandle, asked: Set<FileSystemDirectoryHandle>) {
-    if (await canWrite(folder)) return true
-    if (asked.has(folder)) return false
-    asked.add(folder)
-    return ensureWrite(folder)
-  }
-
-  async function allowTrackFolders(tracks: Track[], asked: Set<FileSystemDirectoryHandle>) {
-    const folders: FileSystemDirectoryHandle[] = []
-    for (const track of tracks) {
-      if (track.directory && !folders.includes(track.directory)) folders.push(track.directory)
+    if (on) {
+      setFilter((current) => (current === "ready" ? "all" : current))
+      void saveListed(true)
     }
-    for (const folder of folders) await allowFolder(folder, asked)
+  }
+
+  function queueAutoSave(id: string) {
+    if (!saveQueueRef.current.includes(id)) saveQueueRef.current.push(id)
+    void drainAutoSave()
+  }
+
+  async function drainAutoSave() {
+    if (saveLoopRef.current) return
+    saveLoopRef.current = true
+    try {
+      for (;;) {
+        if (stoppedRef.current) {
+          saveQueueRef.current = []
+          break
+        }
+        const id = saveQueueRef.current.shift()
+        if (!id) break
+        const track = tracksRef.current.find((item) => item.id === id)
+        if (!track?.analysis || !isMp3Name(track.name) || !autoSaveRef.current) continue
+        await saveIfWritable(track)
+      }
+    } finally {
+      saveLoopRef.current = false
+      if (!stoppedRef.current && saveQueueRef.current.length > 0) void drainAutoSave()
+    }
   }
 
   async function saveIfWritable(track: Track) {
     const selection = selectionRef.current
-    if (!hasSelection(selection)) return
-    const located = await locateTrack(track)
-    if (!located) return
-    const folder = located.directory ?? track.directory
-    const allowed = folder ? await canWrite(folder) : await canWrite(located.handle)
-    if (!allowed) return
-    await writeTrack({ ...track, directory: folder }, located.handle, selection)
-  }
-
-  async function locateTrack(
-    track: Track,
-  ): Promise<{ handle: FileSystemFileHandle; directory?: FileSystemDirectoryHandle } | null> {
-    const folders: FileSystemDirectoryHandle[] = []
-    if (track.directory) folders.push(track.directory)
-    for (const folder of foldersRef.current) {
-      if (!folders.includes(folder)) folders.push(folder)
-    }
-    for (const folder of folders) {
-      if (!(await canWrite(folder))) continue
-      const handle = await findInFolder(folder, track.handle)
-      if (handle) return { handle, directory: folder }
-    }
-    if (await canWrite(track.handle)) return { handle: track.handle, directory: track.directory }
-    return null
-  }
-
-  async function findInFolder(
-    folder: FileSystemDirectoryHandle,
-    file: FileSystemFileHandle,
-  ): Promise<FileSystemFileHandle | null> {
+    if (!hasSelection(selection) || writingRef.current) return
+    const current = tracksRef.current.find((item) => item.id === track.id)
+    if (!current) return
+    const analysis = track.analysis ?? current.analysis
+    if (!analysis) return
+    patch(track.id, { status: "writing", error: undefined })
     try {
-      return await writableFile(folder, file)
-    } catch {
-      return null
+      const folder = await containingFolder(current.handle, current.directory, foldersRef.current)
+      const withFolder = { ...current, analysis, directory: folder ?? undefined }
+      const allowed = withFolder.directory ? await canWrite(withFolder.directory) : await canWrite(current.handle)
+      if (!allowed) {
+        patch(track.id, { status: "ready", error: undefined })
+        showNotice(NEEDS_EDIT)
+        return
+      }
+      if (await writeTrack(withFolder, selection)) clearNeedsEdit()
+    } catch (error) {
+      const row = rowWriteMessage(error)
+      patch(track.id, { status: "ready", error: row })
+      if (!row) showNotice(NEEDS_EDIT)
     }
   }
 
-  async function writeTrack(track: Track, handle: FileSystemFileHandle, selection: SaveSelection): Promise<boolean> {
-    const folderReady = track.directory ? await canWrite(track.directory) : false
-    if (!folderReady && !(await canWrite(handle))) {
-      patch(track.id, { status: "ready" })
+  async function saveBatch(ready: Track[], selection: SaveSelection) {
+    const groups = await groupTracks(ready)
+    for (const group of groups.known) {
+      if (stoppedRef.current) return
+      const allowed = (await canWrite(group.folder)) || (await ensureWrite(group.folder))
+      if (!allowed) {
+        showNotice(NEEDS_EDIT)
+        continue
+      }
+      for (const track of group.tracks) {
+        if (stoppedRef.current) return
+        await writeTrack({ ...track, directory: group.folder }, selection)
+      }
+    }
+
+    let remaining = groups.unknown
+    while (remaining.length > 0) {
+      if (stoppedRef.current) return
+      showNotice(
+        foldersRef.current.length > 0
+          ? "These files are not in the folders already added. Choose the folder that contains them, or cancel."
+          : remaining.length === ready.length
+            ? "Choose the folder that contains these files."
+            : `${remaining.length} ${remaining.length === 1 ? "file is" : "files are"} in another folder. Choose that folder, or cancel.`,
+      )
+      const access = await chooseSaveFolder()
+      if (!access.ok) {
+        showNotice(
+          access.reason === "cancelled"
+            ? remaining.length === ready.length
+              ? "Save was cancelled"
+              : `Saved the files from the chosen folders. ${remaining.length} ${remaining.length === 1 ? "is" : "are"} still in another folder.`
+            : NEEDS_EDIT,
+        )
+        return
+      }
+      await remember(access.directory)
+      if (!(await canWrite(access.directory))) {
+        showNotice(NEEDS_EDIT)
+        return
+      }
+      const still: Track[] = []
+      let wrote = 0
+      for (const track of remaining) {
+        if (stoppedRef.current) return
+        const handle = await grantedWriteHandle(access.directory, track.handle)
+        if (!handle) {
+          still.push(track)
+          continue
+        }
+        if (await writeTrack({ ...track, directory: access.directory }, selection)) wrote += 1
+      }
+      if (wrote === 0) {
+        showNotice("None of the remaining files are in that folder.")
+        return
+      }
+      remaining = still
+    }
+  }
+
+  async function chooseSaveFolder(): Promise<LibraryAccess> {
+    try {
+      return await pickFolder()
+    } catch (error) {
+      showNotice(messageOf(error))
+      return { ok: false, reason: "denied" }
+    }
+  }
+
+  async function groupTracks(tracks: Track[]): Promise<{
+    known: Array<{ folder: FileSystemDirectoryHandle; tracks: Track[] }>
+    unknown: Track[]
+  }> {
+    const known: Array<{ folder: FileSystemDirectoryHandle; tracks: Track[] }> = []
+    const unknown: Track[] = []
+    for (const track of tracks) {
+      const folder = await containingFolder(track.handle, track.directory, foldersRef.current)
+      if (!folder) {
+        unknown.push(track)
+        continue
+      }
+      let group = known.find((item) => item.folder === folder)
+      if (!group) {
+        for (const item of known) {
+          try {
+            if (await item.folder.isSameEntry(folder)) {
+              group = item
+              break
+            }
+          } catch {
+            // Keep both folders when identity cannot be checked.
+          }
+        }
+      }
+      if (!group) {
+        group = { folder, tracks: [] }
+        known.push(group)
+      }
+      group.tracks.push({ ...track, directory: folder })
+    }
+    return { known, unknown }
+  }
+
+  async function writeAlreadyAllowed(selection: SaveSelection) {
+    const waiting = tracksRef.current.filter((track) => track.status === "ready" && track.analysis && isMp3Name(track.name))
+    for (const track of waiting) {
+      if (stoppedRef.current) return
+      const folder = await containingFolder(track.handle, track.directory, foldersRef.current)
+      if (folder) {
+        if (!(await canWrite(folder))) continue
+        await writeTrack({ ...track, directory: folder }, selection)
+      } else if (await canWrite(track.handle)) {
+        await writeTrack(track, selection)
+      }
+    }
+  }
+
+  function clearNeedsEdit() {
+    const held = tracksRef.current.some((track) => track.status === "ready" && track.analysis && isMp3Name(track.name))
+    if (!held && noticeRef.current === NEEDS_EDIT) showNotice("")
+  }
+
+  async function writeTrack(track: Track, selection: SaveSelection): Promise<boolean> {
+    if (!track.analysis || savingRef.current.has(track.id)) return false
+    const handle = await grantedWriteHandle(track.directory, track.handle, track.path)
+    if (!handle) {
+      patch(track.id, { status: "ready", error: undefined, directory: track.directory })
+      showNotice(NEEDS_EDIT)
       return false
     }
-    patch(track.id, { status: "writing", error: undefined, handle })
+    savingRef.current.add(track.id)
+    patch(track.id, { status: "writing", error: undefined, directory: track.directory })
     try {
       const file = await handle.getFile()
       const bytes = new Uint8Array(await file.arrayBuffer())
-      const tagged = writeTags(bytes, fieldsFor(track.analysis!, selection))
+      const tagged = writeTags(bytes, fieldsFor(track.analysis, selection))
       const writable = await handle.createWritable()
       await writable.write(new Blob([bytesOf(tagged)]))
       await writable.close()
-      patch(track.id, { status: "written", error: undefined })
+      patch(track.id, { status: "written", error: undefined, directory: track.directory })
       return true
     } catch (error) {
-      patch(track.id, { status: "ready", error: messageOf(error) })
+      const row = rowWriteMessage(error)
+      if (!row) showNotice(NEEDS_EDIT)
+      patch(track.id, { status: "ready", error: row, directory: track.directory })
       return false
+    } finally {
+      savingRef.current.delete(track.id)
     }
+  }
+
+  function rescanTrack(id: string) {
+    if (writingRef.current) return
+    const track = tracksRef.current.find((item) => item.id === id)
+    if (!track || track.status === "analyzing" || track.status === "writing") return
+    commit(tracksRef.current.map((item) => (item.id === id ? { ...item, status: "queued", error: undefined, rescan: true } : item)))
+    if (!queueRef.current.includes(id)) queueRef.current.push(id)
+    void pump()
+  }
+
+  function rescanTagged() {
+    if (writingRef.current || tracksRef.current.some((track) => track.status === "writing")) return
+    const ids = tracksRef.current.filter((track) => isBulkRescanTarget(track)).map((track) => track.id)
+    if (ids.length === 0) return
+    const idSet = new Set(ids)
+    commit(
+      tracksRef.current.map((track) =>
+        idSet.has(track.id) ? { ...track, status: "queued", error: undefined, rescan: true } : track,
+      ),
+    )
+    for (const id of ids) {
+      if (!queueRef.current.includes(id)) queueRef.current.push(id)
+    }
+    void pump()
   }
 
   function stopQueue() {
@@ -434,9 +591,10 @@ export default function App() {
   }
 
   function saveTrackList() {
-    const source = listView === "visible" ? tracksRef.current.filter((track) => matchesFilter(track, filter)) : tracksRef.current
     const columns = listView === "unwritten" ? UNWRITTEN_COLUMNS : ALL_COLUMNS
-    const csv = trackListCsv(source.map(listRow), columns)
+    const active = autoSaveRef.current && filter === "ready" ? "all" : filter
+    const source = listView === "visible" ? tracksRef.current.filter((track) => matchesFilter(track, active)) : tracksRef.current
+    const csv = trackListCsv(source.map((track) => listRow(track, autoSaveRef.current)), columns)
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" })
     const url = URL.createObjectURL(blob)
     const link = document.createElement("a")
@@ -451,11 +609,12 @@ export default function App() {
   function clearTracks() {
     if (writing) return
     queueRef.current = []
+    saveQueueRef.current = []
     stoppedRef.current = false
     setStopped(false)
     commit([])
     setFilter("all")
-    setNotice("")
+    showNotice("")
   }
 
   function retryFailed() {
@@ -480,10 +639,14 @@ export default function App() {
   const readOnlyCount = readyTracks.length - savableCount
   const selectedNames = fieldNames(selection)
   const tally = tallyTracks(tracks)
-  const visible = tracks.filter((track) => matchesFilter(track, filter))
+  const viewFilter: StatusFilter = autoSave && filter === "ready" ? "all" : filter
+  const visible = tracks.filter((track) => matchesFilter(track, viewFilter))
   const shown = listExpanded ? visible : visible.slice(0, LIST_PREVIEW)
   const folderGroups = queueFolderGroups(tracks)
   const failedCount = tracks.filter((track) => track.status === "error").length
+  const taggedCount = tracks.filter((track) => isBulkRescanTarget(track)).length
+  const savingNow = writing || tracks.some((track) => track.status === "writing")
+  const heldCount = tracks.filter((track) => track.status === "ready" && track.analysis && isMp3Name(track.name)).length
 
   return (
     <main>
@@ -580,9 +743,19 @@ export default function App() {
         <p>{canPick || canPickFolder ? "or drop files and folders here" : "Open this page in Chrome or Edge to choose files"}</p>
       </div>
 
-      {notice ? (
+      {notice && notice !== NEEDS_EDIT ? (
         <p className="notice" role="status">
           {notice}
+        </p>
+      ) : null}
+      {notice === NEEDS_EDIT ? (
+        <p className="notice calm" role="status">
+          <span>{NEEDS_EDIT}</span>
+          {autoSave && heldCount > 0 ? (
+            <button type="button" className="quiet" onClick={() => void allowEditing()} disabled={writing}>
+              Allow editing
+            </button>
+          ) : null}
         </p>
       ) : null}
 
@@ -613,11 +786,13 @@ export default function App() {
         <div className="workspace">
           <div className="toolbar">
             <div className="stats" role="group" aria-label="Filter by status">
-              <FilterButton label="All" count={tally.total} pressed={filter === "all"} onClick={() => setFilter("all")} />
-              <FilterButton label="Working" count={tally.working} pressed={filter === "working"} onClick={() => setFilter("working")} />
-              <FilterButton label="Ready" count={tally.ready} pressed={filter === "ready"} onClick={() => setFilter("ready")} />
-              <FilterButton label="Saved" count={tally.saved} pressed={filter === "saved"} onClick={() => setFilter("saved")} />
-              <FilterButton label="Failed" count={tally.failed} pressed={filter === "failed"} onClick={() => setFilter("failed")} />
+              <FilterButton label="All" count={tally.total} pressed={viewFilter === "all"} onClick={() => setFilter("all")} />
+              <FilterButton label="Working" count={tally.working} pressed={viewFilter === "working"} onClick={() => setFilter("working")} />
+              {autoSave ? null : (
+                <FilterButton label="Ready" count={tally.ready} pressed={viewFilter === "ready"} onClick={() => setFilter("ready")} />
+              )}
+              <FilterButton label="Saved" count={tally.saved} pressed={viewFilter === "saved"} onClick={() => setFilter("saved")} />
+              <FilterButton label="Failed" count={tally.failed} pressed={viewFilter === "failed"} onClick={() => setFilter("failed")} />
             </div>
             <div className="actions">
               <div className="actions-main">
@@ -655,6 +830,15 @@ export default function App() {
                     <option value="all">Whole table</option>
                   </select>
                 </div>
+                <button
+                  type="button"
+                  className="quiet"
+                  onClick={rescanTagged}
+                  disabled={taggedCount === 0 || savingNow}
+                  title="Analyze every tagged file in the list again. Tags are written only if auto-save is already allowed."
+                >
+                  {taggedCount > 0 ? `Rescan tagged ${taggedCount}` : "Rescan tagged"}
+                </button>
                 <button type="button" className="quiet" onClick={retryFailed} disabled={failedCount === 0 || writing}>
                   Retry failed
                 </button>
@@ -665,10 +849,10 @@ export default function App() {
             </div>
             <p>
               {analyzing
-                ? `${trackSummary(tally)} Reading tracks one at a time.`
+                ? `${trackSummary(tally, autoSave)} Reading tracks one at a time.`
                 : selectedNames.length === 0
-                  ? `${trackSummary(tally)} Select at least one field.`
-                  : `${trackSummary(tally)} ${saveSummary(selectedNames, savableCount, readOnlyCount)}`}
+                  ? `${trackSummary(tally, autoSave)} Select at least one field.`
+                  : `${trackSummary(tally, autoSave)} ${saveSummary(selectedNames, savableCount, readOnlyCount)}`}
             </p>
             <p className="legend">
               Energy is 1–10 intensity. Brightness is the share above 5 kHz. Shape is L level, B builds, D jumps. Brightness and shape are not saved.
@@ -684,6 +868,17 @@ export default function App() {
           <div className="table-wrap">
             <table>
               <caption className="sr-only">Analyzed tracks</caption>
+              <colgroup>
+                <col className="col-file" />
+                <col className="col-key" />
+                <col className="col-open" />
+                <col className="col-bpm" />
+                <col className="col-energy" />
+                <col className="col-brightness" />
+                <col className="col-shape" />
+                <col className="col-mixes" />
+                <col className="col-status" />
+              </colgroup>
               <thead>
                 <tr>
                   <th className="file">File</th>
@@ -705,7 +900,16 @@ export default function App() {
                     </td>
                   </tr>
                 ) : (
-                  shown.map((track) => <TrackRow key={track.id} track={track} onRemove={removeTrack} />)
+                  shown.map((track) => (
+                    <TrackRow
+                      key={track.id}
+                      track={track}
+                      autoSave={autoSave}
+                      canSave={hasSelection(selection)}
+                      onRemove={removeTrack}
+                      onRescan={rescanTrack}
+                    />
+                  ))
                 )}
               </tbody>
             </table>
@@ -747,30 +951,43 @@ export default function App() {
   )
 }
 
-function TrackRow({ track, onRemove }: { track: Track; onRemove: (id: string) => void }) {
-  const analysis = track.analysis
+function TrackRow({
+  track,
+  autoSave,
+  canSave,
+  onRemove,
+  onRescan,
+}: {
+  track: Track
+  autoSave: boolean
+  canSave: boolean
+  onRemove: (id: string) => void
+  onRescan: (id: string) => void
+}) {
+  const shown = shownOf(track)
+  const canRescan = track.status !== "analyzing" && track.status !== "writing" && (track.status === "skipped" || track.analysis != null)
   return (
     <tr>
       <td className="file" title={track.name}>{track.name}</td>
-      <td>
-        {analysis ? (
-          <>
-            {analysis.keyLabel}
-            {analysis.uncertain ? <span className="flag">Low confidence</span> : null}
-          </>
+      <td className="key" title={shown?.keyLabel ?? undefined}>
+        {shown?.keyLabel ? (
+          <span className="key-line">
+            {shown.keyLabel}
+            {shown.uncertain ? <span className="flag">Low confidence</span> : null}
+          </span>
         ) : (
           "—"
         )}
       </td>
-      <td className="code">{analysis?.openKey ?? "—"}</td>
-      <td className="code">{analysis ? formatBpm(analysis.bpm) : "—"}</td>
+      <td className="code">{shown?.openKey || "—"}</td>
+      <td className="code">{shown ? formatBpm(shown.bpm) : "—"}</td>
       <td>
-        {analysis ? (
+        {shown?.energy != null ? (
           <span className="energy">
-            <strong>{analysis.energy}</strong>
+            <strong>{shown.energy}</strong>
             <span className="meter" aria-hidden="true">
               {Array.from({ length: 10 }, (_, index) => (
-                <i key={index} className={index < analysis.energy ? "on" : ""} />
+                <i key={index} className={index < shown.energy! ? "on" : ""} />
               ))}
             </span>
           </span>
@@ -778,14 +995,14 @@ function TrackRow({ track, onRemove }: { track: Track; onRemove: (id: string) =>
           "—"
         )}
       </td>
-      <td className="code">{analysis ? analysis.brightness.toFixed(2) : "—"}</td>
-      <td title={analysis ? shapeTitle(analysis.shape) : undefined}>
-        {analysis ? <span className={`shape shape-${analysis.shape.toLowerCase()}`}>{analysis.shape}</span> : "—"}
+      <td className="code">{shown?.brightness != null ? shown.brightness.toFixed(2) : "—"}</td>
+      <td title={shown?.shape ? shapeTitle(shown.shape) : undefined}>
+        {shown?.shape ? <span className={`shape shape-${shown.shape.toLowerCase()}`}>{shown.shape}</span> : "—"}
       </td>
       <td>
-        {analysis ? (
+        {shown && shown.mixesWith.length > 0 ? (
           <span className="mixes">
-            {analysis.mixesWith.map((code) => (
+            {shown.mixesWith.map((code) => (
               <span className="mix" key={code}>{code}</span>
             ))}
           </span>
@@ -795,15 +1012,30 @@ function TrackRow({ track, onRemove }: { track: Track; onRemove: (id: string) =>
       </td>
       <td className={statusClass(track)}>
         <div className="status-cell">
-          <span>{track.error ?? statusLabel(track.status)}</span>
-          <button
-            type="button"
-            className="quiet tiny"
-            onClick={() => onRemove(track.id)}
-            disabled={track.status === "writing" || track.status === "analyzing"}
-          >
-            Remove
-          </button>
+          <span className="status-label" title={track.error ?? statusLabel(track, autoSave, canSave)}>
+            {track.error ?? statusLabel(track, autoSave, canSave)}
+          </span>
+          <span className="row-actions">
+            <button
+              type="button"
+              className={canRescan ? "quiet tiny" : "quiet tiny reserve"}
+              onClick={() => onRescan(track.id)}
+              tabIndex={canRescan ? 0 : -1}
+              aria-hidden={canRescan ? undefined : true}
+              disabled={!canRescan}
+              title="Analyze this file again. Tags are written only if auto-save is already allowed."
+            >
+              Rescan
+            </button>
+            <button
+              type="button"
+              className="quiet tiny"
+              onClick={() => onRemove(track.id)}
+              disabled={track.status === "writing" || track.status === "analyzing"}
+            >
+              Remove
+            </button>
+          </span>
         </div>
       </td>
     </tr>
@@ -834,15 +1066,17 @@ function tallyTracks(tracks: Track[]) {
     working: tracks.filter((track) => track.status === "queued" || track.status === "analyzing" || track.status === "writing").length,
     ready: tracks.filter((track) => track.status === "ready" && !track.error).length,
     saved: tracks.filter((track) => track.status === "written").length,
+    skipped: tracks.filter((track) => track.status === "skipped").length,
     failed: tracks.filter((track) => track.status === "error" || Boolean(track.error)).length,
   }
 }
 
-function trackSummary(tally: ReturnType<typeof tallyTracks>): string {
+function trackSummary(tally: ReturnType<typeof tallyTracks>, autoSave: boolean): string {
   const parts = [`${tally.total} ${tally.total === 1 ? "track" : "tracks"}`]
   if (tally.working > 0) parts.push(`${tally.working} working`)
-  if (tally.ready > 0) parts.push(`${tally.ready} ready`)
+  if (!autoSave && tally.ready > 0) parts.push(`${tally.ready} ready`)
   if (tally.saved > 0) parts.push(`${tally.saved} saved`)
+  if (tally.skipped > 0) parts.push(`${tally.skipped} already tagged`)
   if (tally.failed > 0) parts.push(`${tally.failed} failed`)
   return `${parts.join(" · ")}.`
 }
@@ -931,13 +1165,43 @@ function shapeTitle(shape: "L" | "B" | "D"): string {
   return "Dramatic. Quiet sections and peaks sit far apart."
 }
 
-function statusLabel(status: TrackStatus): string {
-  if (status === "queued") return "Queued"
-  if (status === "analyzing") return "Analyzing"
-  if (status === "ready") return "Ready"
-  if (status === "writing") return "Saving"
-  if (status === "written") return "Saved"
+function statusLabel(track: Track, autoSave: boolean, canSave = true): string {
+  if (track.status === "queued") return "Queued"
+  if (track.status === "analyzing") return "Analyzing"
+  if (track.status === "ready" && autoSave) return isMp3Name(track.name) && canSave ? "Waiting to save" : "Analyzed"
+  if (track.status === "ready") return "Ready"
+  if (track.status === "writing") return "Saving"
+  if (track.status === "written") return "Saved"
+  if (track.status === "skipped") return "Already tagged"
   return "Failed"
+}
+
+function rowWriteMessage(error: unknown): string | undefined {
+  if (error instanceof DOMException) return undefined
+  if (error instanceof Error && /user activation|not allowed|permission/i.test(error.message)) return undefined
+  if (error instanceof Error && error.message) return error.message
+  return "Could not save this file."
+}
+
+type Shown = {
+  keyLabel: string | null
+  openKey: string | null
+  bpm: number | null
+  energy: number | null
+  brightness: number | null
+  shape: Analysis["shape"] | null
+  mixesWith: string[]
+  uncertain: boolean
+}
+
+function shownOf(track: Track): Shown | null {
+  const merged = mergeShown(track.analysis, track.stored)
+  if (!merged) return null
+  return {
+    ...merged,
+    mixesWith: track.analysis?.mixesWith ?? (merged.openKey ? mixesWith(merged.openKey) : []),
+    uncertain: track.analysis?.uncertain ?? false,
+  }
 }
 
 function saveListLabel(view: ListView): string {
@@ -957,18 +1221,18 @@ function formatBpm(bpm: number | null): string {
   return Number.isInteger(bpm) ? String(bpm) : bpm.toFixed(1)
 }
 
-function listRow(track: Track): TrackListRow {
-  const analysis = track.analysis
+function listRow(track: Track, autoSave: boolean): TrackListRow {
+  const shown = shownOf(track)
   return {
     file: track.name,
-    key: analysis ? `${analysis.keyLabel}${analysis.uncertain ? " (low confidence)" : ""}` : "",
-    openKey: analysis?.openKey ?? "",
-    bpm: analysis?.bpm == null ? "" : formatBpm(analysis.bpm),
-    energy: analysis ? String(analysis.energy) : "",
-    brightness: analysis ? analysis.brightness.toFixed(2) : "",
-    shape: analysis?.shape ?? "",
-    mixesWith: analysis ? analysis.mixesWith.join(" ") : "",
-    status: track.error ?? statusLabel(track.status),
+    key: shown?.keyLabel ? `${shown.keyLabel}${shown.uncertain ? " (low confidence)" : ""}` : "",
+    openKey: shown?.openKey ?? "",
+    bpm: shown?.bpm == null ? "" : formatBpm(shown.bpm),
+    energy: shown?.energy == null ? "" : String(shown.energy),
+    brightness: shown?.brightness == null ? "" : shown.brightness.toFixed(2),
+    shape: shown?.shape ?? "",
+    mixesWith: shown ? shown.mixesWith.join(" ") : "",
+    status: track.error ?? statusLabel(track, autoSave),
   }
 }
 
@@ -984,6 +1248,10 @@ function readAutoSave(): boolean {
   } catch {
     return false
   }
+}
+
+function isDirectoryHandle(handle: FileSystemHandle): handle is FileSystemDirectoryHandle {
+  return handle.kind === "directory"
 }
 
 function messageOf(error: unknown): string {

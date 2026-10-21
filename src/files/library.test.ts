@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { ensureWrite, matchByName, rememberFolder } from "./library.ts"
+import { containingFolder, ensureWrite, grantedWriteHandle, matchByName, rememberFolder, rememberMp3Paths, writableFile } from "./library.ts"
 
 describe("matchByName", () => {
   it("returns the candidate that is the same file", async () => {
@@ -48,12 +48,134 @@ describe("ensureWrite", () => {
   })
 })
 
+describe("grantedWriteHandle", () => {
+  it("gets a fresh handle from the folder instead of the dropped file", async () => {
+    const dropped = permissionFile("song.mp3", "prompt")
+    const fresh = permissionFile("song.mp3", "prompt")
+    const directory = writableDirectory(fresh)
+    await expect(grantedWriteHandle(directory, dropped, ["live", "song.mp3"])).resolves.toBe(fresh)
+    expect(dropped.requested).toBe(false)
+    expect(directory.requested).toBe(false)
+  })
+
+  it("does not open a save dialog when the folder is not already writable", async () => {
+    const dropped = permissionFile("song.mp3", "prompt")
+    const directory = permissionHandle("prompt")
+    let opened = false
+    directory.getFileHandle = async () => {
+      opened = true
+      return dropped
+    }
+    await expect(grantedWriteHandle(directory, dropped, ["song.mp3"])).resolves.toBeNull()
+    expect(opened).toBe(false)
+    expect(directory.requested).toBe(false)
+    expect(dropped.requested).toBe(false)
+  })
+
+  it("uses a file the user already allowed", async () => {
+    const file = permissionFile("song.mp3", "granted")
+    await expect(grantedWriteHandle(undefined, file)).resolves.toBe(file)
+    expect(file.requested).toBe(false)
+  })
+
+  it("resolves the file through the folder when that folder can already be written", async () => {
+    const dropped = permissionFile("song.mp3", "prompt")
+    const fresh = permissionFile("song.mp3", "prompt")
+    const directory = {
+      kind: "directory",
+      name: "Edits",
+      requested: false,
+      queryPermission: async () => "granted" as PermissionState,
+      requestPermission: async function (this: { requested: boolean }) {
+        this.requested = true
+        return "granted" as PermissionState
+      },
+      resolve: async (handle: FileSystemHandle) => (handle === dropped ? ["song.mp3"] : null),
+      getFileHandle: async () => fresh,
+    } as unknown as FileSystemDirectoryHandle & { requested: boolean }
+    await expect(writableFile(directory, dropped)).resolves.toBe(fresh)
+  })
+})
+
+describe("writableFile index", () => {
+  it("reuses paths from a folder that was already listed", async () => {
+    const song = permissionFile("song.mp3", "granted")
+    song.isSameEntry = async (other) => other === song
+    let listed = false
+    const directory = {
+      kind: "directory",
+      name: "Edits",
+      resolve: async () => null,
+      values: () => {
+        listed = true
+        throw new Error("should not list")
+      },
+      getFileHandle: async (name: string) => {
+        if (name !== song.name) throw new Error("missing file")
+        return song
+      },
+    } as unknown as FileSystemDirectoryHandle
+    rememberMp3Paths(directory, [{ name: "song.mp3", path: ["song.mp3"] }])
+    await expect(writableFile(directory, song)).resolves.toBe(song)
+    expect(listed).toBe(false)
+  })
+
+  it("walks a folder once when two files are resolved from it", async () => {
+    const song = permissionFile("song.mp3", "granted")
+    const other = permissionFile("other.mp3", "granted")
+    song.isSameEntry = async (candidate) => candidate === song
+    other.isSameEntry = async (candidate) => candidate === other
+    const files = new Map<string, FileSystemFileHandle>([
+      ["song.mp3", song],
+      ["other.mp3", other],
+    ])
+    let walks = 0
+    const directory = {
+      kind: "directory",
+      name: "House",
+      resolve: async () => null,
+      async *values() {
+        walks += 1
+        yield { kind: "file", name: "song.mp3" }
+        yield { kind: "file", name: "other.mp3" }
+      },
+      getFileHandle: async (name: string) => {
+        const handle = files.get(name)
+        if (!handle) throw new Error("missing file")
+        return handle
+      },
+    } as unknown as FileSystemDirectoryHandle
+    await expect(writableFile(directory, song)).resolves.toBe(song)
+    await expect(writableFile(directory, other)).resolves.toBe(other)
+    expect(walks).toBe(1)
+  })
+})
+
+describe("containingFolder", () => {
+  it("keeps the folder a file was dropped from and does not ask again", async () => {
+    const directory = permissionHandle("prompt")
+    const file = permissionFile("song.mp3", "prompt")
+    await expect(containingFolder(file, directory, [])).resolves.toBe(directory)
+    expect(directory.requested).toBe(false)
+  })
+
+  it("does not prompt remembered folders that are not already readable", async () => {
+    const remembered = permissionHandle("prompt")
+    remembered.values = () => {
+      throw new Error("should not list")
+    }
+    const file = permissionFile("song.mp3", "prompt")
+    await expect(containingFolder(file, undefined, [remembered])).resolves.toBeNull()
+    expect(remembered.requested).toBe(false)
+  })
+})
+
 function folder(name: string): FileSystemDirectoryHandle {
   return {
     kind: "directory",
     name,
     isSameEntry: async () => false,
-  } as FileSystemDirectoryHandle
+  } as unknown as FileSystemDirectoryHandle
 }
 
 function permissionHandle(state: PermissionState, next: PermissionState = state) {
@@ -62,9 +184,53 @@ function permissionHandle(state: PermissionState, next: PermissionState = state)
     name: "Edits",
     requested: false,
     queryPermission: async () => state,
-    requestPermission: async function () {
+    requestPermission: async function (this: { requested: boolean }) {
       this.requested = true
       return next
     },
-  } as FileSystemHandle & { requested: boolean }
+  } as unknown as FileSystemDirectoryHandle & {
+    requested: boolean
+    getFileHandle?: (name: string) => Promise<FileSystemFileHandle>
+    values?: () => never
+  }
+}
+
+function permissionFile(name: string, state: PermissionState) {
+  return {
+    kind: "file",
+    name,
+    requested: false,
+    queryPermission: async () => state,
+    requestPermission: async function (this: { requested: boolean }) {
+      this.requested = true
+      return "granted" as PermissionState
+    },
+    isSameEntry: async () => false,
+  } as unknown as FileSystemFileHandle & { requested: boolean }
+}
+
+function writableDirectory(child: FileSystemFileHandle & { requested: boolean }) {
+  const nested = {
+    getFileHandle: async (name: string) => {
+      if (name !== child.name) throw new Error("missing file")
+      return child
+    },
+  }
+  return {
+    kind: "directory",
+    name: "Edits",
+    requested: false,
+    queryPermission: async () => "granted" as PermissionState,
+    requestPermission: async function (this: { requested: boolean }) {
+      this.requested = true
+      return "granted" as PermissionState
+    },
+    getDirectoryHandle: async (name: string) => {
+      if (name !== "live") throw new Error("missing folder")
+      return nested
+    },
+    getFileHandle: async () => {
+      throw new Error("not at the top")
+    },
+  } as unknown as FileSystemDirectoryHandle & { requested: boolean }
 }

@@ -17,25 +17,36 @@ export function isAudioFile(handle: FileSystemHandle): handle is FileSystemFileH
   return handle.kind === "file" && isAudioName(handle.name)
 }
 
+export type AudioEntry = {
+  handle: FileSystemFileHandle
+  /** Path inside the chosen folder, including the file name. */
+  path: string[]
+}
+
 /** Audio files in this folder and its subfolders. A folder that cannot be listed is skipped. */
-export async function collectAudioFiles(directory: FileSystemDirectoryHandle): Promise<FileSystemFileHandle[]> {
-  const files: FileSystemFileHandle[] = []
-  await walk(directory, files)
+export async function collectAudioEntries(directory: FileSystemDirectoryHandle): Promise<AudioEntry[]> {
+  const files: AudioEntry[] = []
+  await walk(directory, [], files)
   return files
 
-  async function walk(dir: FileSystemDirectoryHandle, into: FileSystemFileHandle[]): Promise<void> {
+  async function walk(dir: FileSystemDirectoryHandle, prefix: string[], into: AudioEntry[]): Promise<void> {
     for await (const handle of dir.values()) {
       if (handle.kind === "directory") {
         try {
-          await walk(handle, into)
+          await walk(handle, [...prefix, handle.name], into)
         } catch {
           // Skip a folder the site cannot list.
         }
       } else if (isAudioFile(handle)) {
-        into.push(handle)
+        into.push({ handle, path: [...prefix, handle.name] })
       }
     }
   }
+}
+
+export async function collectAudioFiles(directory: FileSystemDirectoryHandle): Promise<FileSystemFileHandle[]> {
+  const entries = await collectAudioEntries(directory)
+  return entries.map((entry) => entry.handle)
 }
 
 export const audioPickerTypes = [

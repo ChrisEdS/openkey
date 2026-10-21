@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { isLowConfidence, keyLabel, mixesWith, openKeyCode } from "./openKey.ts"
+import { isLowConfidence, keyLabel, keyLabelFromOpenKey, mixesWith, openKeyCode } from "./openKey.ts"
 
 describe("openKeyCode", () => {
   it("maps the reference keys used by DJs", () => {
@@ -16,6 +16,16 @@ describe("openKeyCode", () => {
   it("rejects an unknown pitch", () => {
     expect(openKeyCode("H", "major")).toBeNull()
     expect(openKeyCode("C", "dorian")).toBeNull()
+  })
+})
+
+describe("keyLabelFromOpenKey", () => {
+  it("uses the same wheel as the detector", () => {
+    expect(keyLabelFromOpenKey("8A")).toBe("A minor")
+    expect(keyLabelFromOpenKey("8B")).toBe("C major")
+    expect(keyLabelFromOpenKey("2B")).toBe("F# major")
+    expect(keyLabelFromOpenKey(openKeyCode("Bb", "major")!)).toBe("A# major")
+    expect(keyLabelFromOpenKey("13A")).toBeNull()
   })
 })
 

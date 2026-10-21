@@ -33,6 +33,24 @@ export function openKeyCode(key: string, scale: string): string | null {
   return `${number}${minor ? "A" : "B"}`
 }
 
+/** Musical name for an Open Key code, using the same sharps as the detector. */
+export function keyLabelFromOpenKey(code: string): string | null {
+  const match = /^(\d{1,2})([AB])$/i.exec(code.trim())
+  if (!match) return null
+  const number = Number(match[1])
+  const letter = match[2]?.toUpperCase()
+  if (number < 1 || number > 12 || (letter !== "A" && letter !== "B")) return null
+  if (letter === "B") {
+    const index = MAJOR_NUMBERS.findIndex((item) => item === number)
+    if (index < 0) return null
+    return keyLabel(PITCHES[index] ?? "", "major")
+  }
+  for (let index = 0; index < PITCHES.length; index++) {
+    if (MAJOR_NUMBERS[(index + 3) % 12] === number) return keyLabel(PITCHES[index] ?? "", "minor")
+  }
+  return null
+}
+
 /** Previous, next, and relative major/minor on the Open Key wheel. */
 export function mixesWith(code: string): string[] {
   const match = /^(\d{1,2})([AB])$/.exec(code)

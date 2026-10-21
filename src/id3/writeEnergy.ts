@@ -1,5 +1,9 @@
+import { keyLabel, keyLabelFromOpenKey, openKeyCode } from "../analysis/openKey.ts"
+
 const ENERGY_DESCRIPTION = "EnergyLevel"
+const MUSICAL_KEY = "MusicalKey"
 const GROW_PADDING = 512
+const PITCH = "C#|D#|F#|G#|A#|Db|Eb|Gb|Ab|Bb|[A-G]"
 
 export type Id3Frame = {
   id: string
@@ -33,6 +37,133 @@ export function readId3(data: Uint8Array): Id3Tag {
     frames: parsed.frames.map((frame) => ({ id: frame.id, body: frame.body })),
     audio: parsed.audio,
   }
+}
+
+export type StoredKey = {
+  keyLabel: string | null
+  openKey: string | null
+  energy: number | null
+  bpm: number | null
+}
+
+export function emptyStoredKey(): StoredKey {
+  return { keyLabel: null, openKey: null, energy: null, bpm: null }
+}
+
+/** True when the tag already has a musical key or an Open Key. That alone is not a finished scan. */
+export function shouldSkipStoredKey(stored: Pick<StoredKey, "keyLabel" | "openKey">): boolean {
+  return stored.keyLabel != null || stored.openKey != null
+}
+
+export type FinishedScan = {
+  brightness: number | null
+  shape: string | null
+}
+
+/**
+ * Skip Essentia only when this session already has brightness and shape.
+ * A key tag is partial: brightness and shape are never stored in the file. Rescan opts back in.
+ */
+export function shouldSkipAnalysis(finished: FinishedScan | null | undefined, rescan = false): boolean {
+  if (rescan) return false
+  return finished != null && finished.brightness != null && finished.shape != null
+}
+
+/** Toolbar rescan: skipped rows, plus every other file that already has a key tag. */
+export function isBulkRescanTarget(track: {
+  status: string
+  stored?: Pick<StoredKey, "keyLabel" | "openKey"> | null
+}): boolean {
+  if (track.status === "analyzing" || track.status === "writing") return false
+  if (track.status === "skipped") return true
+  return track.stored != null && shouldSkipStoredKey(track.stored)
+}
+
+export type MergedFields = {
+  keyLabel: string | null
+  openKey: string | null
+  bpm: number | null
+  energy: number | null
+  brightness: number | null
+  shape: "L" | "B" | "D" | null
+}
+
+/** Stored tags fill key, Open Key, BPM, and energy. Brightness and shape come only from analysis. */
+export function mergeShown(
+  analysis:
+    | {
+        keyLabel: string
+        openKey: string
+        bpm: number | null
+        energy: number
+        brightness: number
+        shape: "L" | "B" | "D"
+      }
+    | null
+    | undefined,
+  stored: StoredKey | null | undefined,
+): MergedFields | null {
+  if (!analysis && !stored) return null
+  return {
+    keyLabel: analysis?.keyLabel ?? stored?.keyLabel ?? null,
+    openKey: analysis?.openKey ?? stored?.openKey ?? null,
+    bpm: analysis?.bpm ?? stored?.bpm ?? null,
+    energy: analysis?.energy ?? stored?.energy ?? null,
+    brightness: analysis?.brightness ?? null,
+    shape: analysis?.shape ?? null,
+  }
+}
+
+export function readStoredKey(data: Uint8Array): StoredKey {
+  let tag: ParsedTag
+  try {
+    tag = readTag(data)
+  } catch {
+    return emptyStoredKey()
+  }
+  let tkey: string | null = null
+  let musical: string | null = null
+  let comment: string | null = null
+  let energyText: string | null = null
+  let bpmText: string | null = null
+  for (const frame of tag.frames) {
+    let body: Uint8Array
+    try {
+      body = logicalBody(tag.version, frame)
+    } catch {
+      continue
+    }
+    if (frame.id === "TKEY" && tkey == null) tkey = readText(body)
+    if (frame.id === "TBPM" && bpmText == null) bpmText = readText(body)
+    if (frame.id === "TXXX") {
+      const field = readTxxx(body)
+      if (field?.description === ENERGY_DESCRIPTION && energyText == null) energyText = field.value
+      if (field?.description === MUSICAL_KEY && musical == null) musical = field.value
+    }
+    if (frame.id === "COMM" && comment == null) {
+      const field = readComm(body)
+      if (field?.description === "") comment = field.text
+    }
+  }
+  return interpretStored({ tkey, musical, comment, energyText, bpmText })
+}
+
+/** Byte length of the ID3 tag, including header and footer. Null when the file has no ID3 header. */
+export function id3PrefixLength(header: Uint8Array): number | null {
+  if (header.length < 10 || header[0] !== 0x49 || header[1] !== 0x44 || header[2] !== 0x33) return null
+  const size = decodeSyncsafe(header, 6)
+  const footer = header[3] === 4 && (header[5] & 0x10) !== 0 ? 10 : 0
+  return 10 + size + footer
+}
+
+/** Read the ID3 header only. Audio after the tag is not loaded. */
+export async function readStoredKeyFile(file: Blob): Promise<StoredKey> {
+  const head = new Uint8Array(await file.slice(0, 10).arrayBuffer())
+  const length = id3PrefixLength(head)
+  if (length == null) return readStoredKey(head)
+  const total = Math.min(file.size, length)
+  const bytes = total === head.length ? head : new Uint8Array(await file.slice(0, total).arrayBuffer())
+  return readStoredKey(bytes)
 }
 
 export function readEnergyFields(data: Uint8Array): { energyLevel: string | null; comment: string | null } {
@@ -181,6 +312,92 @@ function updateFrames(version: 3 | 4, frames: StoredFrame[], fields: TagSelectio
   }
   if (writesBpm && !wroteBpm) next.push(makeFrame(version, "TBPM", buildText(formatTempo(fields.bpm!))))
   return next
+}
+
+function interpretStored(parts: {
+  tkey: string | null
+  musical: string | null
+  comment: string | null
+  energyText: string | null
+  bpmText: string | null
+}): StoredKey {
+  const tkeyOpen = parts.tkey ? normalizeOpenKey(parts.tkey) : null
+  const tkeyMusical = parts.tkey && !tkeyOpen ? canonicalMusical(parts.tkey) : null
+  const frameMusical = parts.musical ? canonicalMusical(parts.musical) : null
+  const commentOpen = openKeyInComment(parts.comment)
+  const openKey =
+    tkeyOpen ??
+    openFromMusical(frameMusical) ??
+    openFromMusical(tkeyMusical) ??
+    commentOpen
+  const keyLabelText =
+    (frameMusical ? keyLabel(frameMusical.key, frameMusical.scale) : null) ??
+    (tkeyMusical ? keyLabel(tkeyMusical.key, tkeyMusical.scale) : null) ??
+    (openKey ? keyLabelFromOpenKey(openKey) : null)
+  return {
+    keyLabel: keyLabelText,
+    openKey,
+    energy: parseEnergy(parts.energyText),
+    bpm: parseBpm(parts.bpmText),
+  }
+}
+
+function openFromMusical(musical: { key: string; scale: "major" | "minor" } | null): string | null {
+  if (!musical) return null
+  return openKeyCode(musical.key, musical.scale)
+}
+
+function normalizeOpenKey(text: string): string | null {
+  const match = /^\s*((?:1[0-2]|[1-9])[AB])\s*$/i.exec(text)
+  return match?.[1] ? match[1].toUpperCase() : null
+}
+
+function openKeyInComment(text: string | null): string | null {
+  if (!text) return null
+  const match = /(?:^|\s)((?:1[0-2]|[1-9])[AB])\s*[-–—]\s*Energy\s+\d{1,2}\b/i.exec(text)
+  return match?.[1] ? match[1].toUpperCase() : null
+}
+
+function canonicalMusical(text: string): { key: string; scale: "major" | "minor" } | null {
+  const trimmed = text.trim()
+  const word = new RegExp(`^(${PITCH})\\s+(major|minor)$`, "i").exec(trimmed)
+  if (word?.[1] && word[2]) return musicalFromCode(word[1], word[2].toLowerCase() === "minor" ? "minor" : "major")
+  const short = new RegExp(`^(${PITCH})(m)?$`, "i").exec(trimmed)
+  if (!short?.[1]) return null
+  return musicalFromCode(short[1], short[2] ? "minor" : "major")
+}
+
+function musicalFromCode(key: string, scale: "major" | "minor"): { key: string; scale: "major" | "minor" } | null {
+  const code = openKeyCode(key, scale)
+  const label = code ? keyLabelFromOpenKey(code) : null
+  if (!label) return null
+  const match = /^(.*) (major|minor)$/.exec(label)
+  if (!match?.[1] || !match[2]) return null
+  return { key: match[1], scale: match[2] === "minor" ? "minor" : "major" }
+}
+
+function parseEnergy(text: string | null): number | null {
+  if (!text || !/^\d+$/.test(text.trim())) return null
+  const value = Number(text)
+  if (!Number.isInteger(value) || value < 1 || value > 10) return null
+  return value
+}
+
+function parseBpm(text: string | null): number | null {
+  if (!text) return null
+  const value = Number(text.trim())
+  if (!Number.isFinite(value) || value <= 0) return null
+  return value
+}
+
+function readText(body: Uint8Array): string | null {
+  if (body.length < 1 || body[0] > 3) return null
+  try {
+    const text = readEncoded(body, 1, body[0]).text.trim()
+    return text === "" ? null : text
+  } catch {
+    return null
+  }
 }
 
 function musicalKeyCode(label: string): string {
