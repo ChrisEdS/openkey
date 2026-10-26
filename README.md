@@ -8,11 +8,12 @@ openkey reads a track in the browser and tells you the musical key, the Open Key
 - 🔄 **Open Key** — the Camelot code, plus the three codes it mixes with.
 - ⚡ **Energy** — 1–10 for electronic music. A steady club track lands around 7. Written to the energy tag.
 - 💬 **Comment** — Open Key and energy in the Mixed In Key form, `8A - Energy 7`, in front of the existing note.
-- 🌗 **Shape** — L stays level, B builds, D jumps. Shown in the table, not written to the file.
+- 🔆 **Brightness** — how bright the top end is, from 0 to 1. Stays in the table and CSV; not written to the file.
+- 🌗 **Shape** — L stays level, B builds, D jumps. Stays in the table and CSV; not written to the file.
 
 ![openkey with key, energy, brightness, and shape for a few tracks](docs/screenshot.png)
 
-Chrome or Edge can overwrite an MP3 in place. Safari can show a result, but it cannot write the original file.
+Chrome or Edge can overwrite an MP3 in place through the File System Access API. Safari can show a result, but it cannot write the original file.
 
 ## Run
 
@@ -21,7 +22,7 @@ npm install
 npm run dev
 ```
 
-Open the address Vite prints. Drop audio or a folder on the page, or choose files or folders. Several folders can be queued, including their subfolders. A dropped folder is readable immediately. Editing needs one allow: Chrome asks once per folder, not once per file. Choose folders asks for one folder at a time; cancel when you are done. Analysis runs one file at a time. A key already in the file is shown at once. BPM, energy, brightness, and shape are still calculated unless this session already has them. Brightness and shape are never written. Rescan tagged re-queues those files. Rescan on a row does the same for that file. Stop finishes the current file so a USB drive can be ejected in Finder. Resume continues the queue. This page cannot eject a drive. If macOS still says the drive is in use, close the tab. A long list stays folded at 20 rows until you show every row. The status filters stay in view.
+Open [http://localhost:5173](http://localhost:5173). Drop audio or a folder on the page, or choose files or folders. Several folders can be queued, including their subfolders. A dropped folder is readable immediately. Editing needs one allow: Chrome asks once per folder, not once per file. Choose folders asks for one folder at a time; cancel when you are done. Analysis runs one file at a time. A key already in the file is shown at once. BPM, energy, brightness, and shape are still calculated unless this session already has them. Brightness and shape stay in the table and CSV only. Rescan tagged re-queues those files. Rescan on a row does the same for that file. Stop finishes the current file so a USB drive can be ejected in Finder. Resume continues the queue. This page cannot eject a drive. If macOS still says the drive is in use, close the tab. A long list stays folded at 20 rows until you show every row. The status filters stay in view.
 
 ## Run with Docker
 
@@ -38,13 +39,13 @@ Open [http://localhost:8080](http://localhost:8080). Docker only builds and serv
 | Key | Musical key from Essentia, for example `A minor` or `F# major`. Flats are shown as sharps, so B flat becomes `A#`. If the estimate is weak, the row says **Low confidence**. |
 | Open Key | The same key on the Camelot wheel. A minor is `8A`. C major is `8B`. Minor keys use A, major keys use B. |
 | Mixes with | The three codes that sit next to this one: the previous code, the next code, and the relative major or minor. `8A` mixes with `7A`, `9A`, and `8B`. |
-| BPM | Tempo from Essentia’s Percival estimator, to one decimal. `126` stays `126`. `122.36` becomes `122.4`. When this tempo and its half or double both sit in a normal dance range (about 70–100 and 140–200), the row also shows the other reading, such as `174` and `Also 87`. The written BPM stays the main estimate. |
+| BPM | Tempo from Essentia’s Percival estimator, to one decimal. `126` stays `126`. `122.36` becomes `122.4`. When this tempo and its half or double both sit in a normal dance range (about 70–100 and 140–200), the row also shows the other reading, such as `174` and `Also 87`. A CSV export records that as `174 (also 87)`. The written `TBPM` stays the main estimate. |
 | Energy | A 1–10 intensity score for electronic music. A steady club track lands around 7. A sparser groove lands around 4. This is not a loudness meter, so a brickwalled master does not automatically score high. |
-| Brightness | How much of the signal sits above 5 kHz, from 0 to 1. `0.00` is dark. `1.00` is bright. Shown to two decimals. |
-| Shape | How the drive changes through the track. **L** stays level, **B** builds, **D** jumps between a quiet stretch and a peak. Hover a letter for the plain-language description. |
-| Status | Queued, analyzing, ready, saving, saved, or failed. With auto-save on, an MP3 that still needs folder permission says Waiting to save. A key already in the file shows while the rest is calculated. Remove drops that row. It does not delete the MP3. |
+| Brightness | How much of the signal sits above 5 kHz, from 0 to 1. `0.00` is dark. `1.00` is bright. Shown to two decimals in the table and CSV. |
+| Shape | How the drive changes through the track. **L** stays level, **B** builds, **D** jumps between a quiet stretch and a peak. Hover a letter for the plain-language description. Shown in the table and CSV. |
+| Status | Queued, analyzing, ready, saving, saved, or failed. With auto-save on, an MP3 that still needs folder permission says Waiting to save until Allow editing. A key already in the file shows while the rest is calculated. Remove drops that row. It does not delete the MP3. |
 
-Brightness and shape are there to read. They are not written into the file.
+Brightness and shape are there to read and to download with Save whole table or Save not written. They are not written into the file.
 
 Key and BPM say whether two tracks can play together. Energy, brightness, and shape say how the blend goes.
 
@@ -60,7 +61,7 @@ The same file always produces the same energy, brightness, and shape. A key tag 
 
 Energy and Comment are on by default. Key, Open Key, and BPM stay off, so those tags are left alone until you turn them on. Nothing you leave unchecked is deleted.
 
-Auto-save is off until you turn it on. It writes the checked tags into each ready MP3. With auto-save on there is no Ready filter. Files waiting for folder permission say Waiting to save until Allow editing. WAV and the other formats stay read-only. Brightness and shape are still not written.
+Auto-save is off until you turn it on. It writes the checked tags into each ready MP3. With auto-save on there is no Ready filter. Files waiting for folder permission say Waiting to save until Allow editing. WAV and the other formats stay read-only. Brightness and shape stay in the table and CSV only.
 
 **Energy** goes into the energy tag DJ software reads: an ID3 `TXXX` frame described as `EnergyLevel`, with a value from `1` to `10`.
 
@@ -87,8 +88,10 @@ Turn Comment off and the energy tag is still written. The existing comment stays
 | Key | `TKEY`, for example `Am` or `F#` |
 | Open Key | `TKEY`, for example `8A` |
 | Key and Open Key together | `TKEY` keeps the Open Key code. `TXXX` / `MusicalKey` keeps the musical name, for example `A minor` |
-| BPM | `TBPM`, the same number shown in the table |
+| BPM | `TBPM`, the main estimate only (not the half/double hint) |
 | Comment | With Energy on, `8A - Energy 7` in front of the existing comment |
+
+Brightness, shape, and mixes-with are never written. Save not written downloads those columns as CSV.
 
 ID3v2.2 files are saved as ID3v2.3, with the older frame names translated and the audio left as it is. A compressed v2.2 tag, or a frame this app cannot carry over, is left unchanged. If a frame that has to change is compressed or encrypted, the file is left unchanged. Saving uses the folders you already chose. Chrome asks once for a folder, not once per file. If a track sits in a folder that was not chosen yet, Chrome asks for that folder. Each folder is remembered.
 
