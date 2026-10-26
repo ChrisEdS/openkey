@@ -23,6 +23,14 @@ npm run dev
 
 Open the address Vite prints. Drop audio or a folder on the page, or choose files or folders. Several folders can be queued, including their subfolders. A dropped folder is readable immediately. Editing needs one allow: Chrome asks once per folder, not once per file. Choose folders asks for one folder at a time; cancel when you are done. Analysis runs one file at a time. A key already in the file is shown at once. BPM, energy, brightness, and shape are still calculated unless this session already has them. Brightness and shape are never written. Rescan tagged re-queues those files. Rescan on a row does the same for that file. Stop finishes the current file so a USB drive can be ejected in Finder. Resume continues the queue. This page cannot eject a drive. If macOS still says the drive is in use, close the tab. A long list stays folded at 20 rows until you show every row. The status filters stay in view.
 
+## Run with Docker
+
+```bash
+docker compose up --build
+```
+
+Open [http://localhost:8080](http://localhost:8080). Docker only builds and serves the static UI. Folder pick and MP3 writes still need Chrome (or Chromium with the File System Access API) in the browser; the container does not mount your music library or analyze files on the server.
+
 ## What a row means
 
 | Column | What it is |
