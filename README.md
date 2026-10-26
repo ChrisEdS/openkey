@@ -30,7 +30,7 @@ Open the address Vite prints. Drop audio or a folder on the page, or choose file
 | Key | Musical key from Essentia, for example `A minor` or `F# major`. Flats are shown as sharps, so B flat becomes `A#`. If the estimate is weak, the row says **Low confidence**. |
 | Open Key | The same key on the Camelot wheel. A minor is `8A`. C major is `8B`. Minor keys use A, major keys use B. |
 | Mixes with | The three codes that sit next to this one: the previous code, the next code, and the relative major or minor. `8A` mixes with `7A`, `9A`, and `8B`. |
-| BPM | Tempo from Essentia’s Percival estimator, to one decimal. `126` stays `126`. `122.36` becomes `122.4`. |
+| BPM | Tempo from Essentia’s Percival estimator, to one decimal. `126` stays `126`. `122.36` becomes `122.4`. When this tempo and its half or double both sit in a normal dance range (about 70–100 and 140–200), the row also shows the other reading, such as `174` and `Also 87`. The written BPM stays the main estimate. |
 | Energy | A 1–10 intensity score for electronic music. A steady club track lands around 7. A sparser groove lands around 4. This is not a loudness meter, so a brickwalled master does not automatically score high. |
 | Brightness | How much of the signal sits above 5 kHz, from 0 to 1. `0.00` is dark. `1.00` is bright. Shown to two decimals. |
 | Shape | How the drive changes through the track. **L** stays level, **B** builds, **D** jumps between a quiet stretch and a peak. Hover a letter for the plain-language description. |

@@ -572,14 +572,14 @@ table {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
-  min-width: 1560px;
+  min-width: 1656px;
   table-layout: fixed;
 }
 
 .col-file { width: 300px; }
 .col-key { width: 200px; }
 .col-open { width: 116px; }
-.col-bpm { width: 80px; }
+.col-bpm { width: 176px; }
 .col-energy { width: 160px; }
 .col-brightness { width: 128px; }
 .col-shape { width: 76px; }

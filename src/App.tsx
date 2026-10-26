@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent } from "react"
+import { formatTempo, tempoAlternate, tempoListText } from "./analysis/bpm.ts"
 import { analyzeFile } from "./analysis/client.ts"
 import type { Analysis } from "./analysis/types.ts"
 import { mixesWith } from "./analysis/openKey.ts"
@@ -911,7 +912,7 @@ export default function App() {
                   : `${trackSummary(tally, autoSave)} ${saveSummary(selectedNames, savableCount, readOnlyCount)}`}
             </p>
             <p className="legend">
-              Energy is 1–10 intensity. Brightness is the share above 5 kHz. Shape is L level, B builds, D jumps. Brightness and shape are not saved.
+              Energy is 1–10 intensity. Brightness is the share above 5 kHz. Shape is L level, B builds, D jumps. Also next to a BPM means half-time and double-time are both normal dance tempos. Brightness and shape are not saved.
             </p>
             {stopped ? (
               <p className="drive" role="status">
@@ -940,7 +941,7 @@ export default function App() {
                   <th className="file">File</th>
                   <th>Key</th>
                   <th>Open Key</th>
-                  <th>BPM</th>
+                  <th title="To one decimal. Also shows the other tempo when half-time and double-time are both normal dance tempos.">BPM</th>
                   <th title="1–10 intensity. A steady club track is about 7.">Energy</th>
                   <th title="Share of the sound above 5 kHz. 0 is dark, 1 is bright.">Brightness</th>
                   <th title="L stays level, B builds, D jumps.">Shape</th>
@@ -1036,7 +1037,9 @@ function TrackRow({
         )}
       </td>
       <td className="code">{shown?.openKey || "—"}</td>
-      <td className="code">{shown ? formatBpm(shown.bpm) : "—"}</td>
+      <td className="code" title={bpmTitle(shown?.bpm ?? null)}>
+        {shown ? <BpmValue bpm={shown.bpm} /> : "—"}
+      </td>
       <td>
         {shown?.energy != null ? (
           <span className="energy">
@@ -1274,7 +1277,27 @@ function listViewTitle(view: ListView): string {
 
 function formatBpm(bpm: number | null): string {
   if (bpm == null) return "—"
-  return Number.isInteger(bpm) ? String(bpm) : bpm.toFixed(1)
+  return formatTempo(bpm)
+}
+
+function bpmTitle(bpm: number | null): string | undefined {
+  if (bpm == null) return undefined
+  const other = tempoAlternate(bpm)
+  if (other == null) return undefined
+  return `Beats also line up at ${formatTempo(other)}. Half-time and double-time can both be right.`
+}
+
+function BpmValue({ bpm }: { bpm: number | null }) {
+  const text = formatBpm(bpm)
+  if (bpm == null) return text
+  const other = tempoAlternate(bpm)
+  if (other == null) return text
+  return (
+    <span className="key-line">
+      {text}
+      <span className="flag">Also {formatTempo(other)}</span>
+    </span>
+  )
 }
 
 function listRow(track: Track, autoSave: boolean): TrackListRow {
@@ -1283,7 +1306,7 @@ function listRow(track: Track, autoSave: boolean): TrackListRow {
     file: track.name,
     key: shown?.keyLabel ? `${shown.keyLabel}${shown.uncertain ? " (low confidence)" : ""}` : "",
     openKey: shown?.openKey ?? "",
-    bpm: shown?.bpm == null ? "" : formatBpm(shown.bpm),
+    bpm: shown?.bpm == null ? "" : tempoListText(shown.bpm),
     energy: shown?.energy == null ? "" : String(shown.energy),
     brightness: shown?.brightness == null ? "" : shown.brightness.toFixed(2),
     shape: shown?.shape ?? "",
